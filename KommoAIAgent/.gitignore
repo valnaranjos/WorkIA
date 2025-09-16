@@ -1,0 +1,89 @@
+## Visual Studio (general)
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## Archivos temporales de compilación
+bin/
+obj/
+out/
+[Bb]uild/
+[Ll]ogs/
+[Dd]ebug/
+[Rr]elease/
+
+## Archivos de evaluación/índices
+ProjectEvaluation/
+CopilotIndices/
+
+## Archivos de Rider / JetBrains
+.idea/
+
+## Archivos de sistema
+*.dbmdl
+*.bak
+*.log
+*.tmp
+*.temp
+*.cache
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+## Archivos de paquetes NuGet
+*.nupkg
+*.snupkg
+*.nuspec
+*.psmdcp
+.packages/
+packages/
+*.nuget.props
+*.nuget.targets
+
+## Configuración específica de usuario de VS
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## Archivos de publicación
+*.Publish.xml
+publish/
+
+## Configuración de IIS Express
+.vscode/
+.vscode/*
+*.vspscc
+*.vssscc
+
+## Archivos de test
+TestResult*/
+*.VisualState.xml
+*.TestCase.json
+
+## Archivos de cobertura
+*.coverage
+*.coveragexml
+
+## Archivos de migraciones (si usas EF Core)
+Migrations/
+
+## Archivos secretos / locales
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+
+## Archivos OS (Windows/Mac/Linux)
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+## Archivos de Rider / ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user

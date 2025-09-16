@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KommoAIAgent", "KommoAIAgent\KommoAIAgent.csproj", "{BE690A25-3ADA-4234-90AB-3B5EE77FC232}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BE690A25-3ADA-4234-90AB-3B5EE77FC232}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BE690A25-3ADA-4234-90AB-3B5EE77FC232}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BE690A25-3ADA-4234-90AB-3B5EE77FC232}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BE690A25-3ADA-4234-90AB-3B5EE77FC232}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {68412E2F-DD96-40F2-B3F3-0C2915F8B456}
+	EndGlobalSection
+EndGlobal

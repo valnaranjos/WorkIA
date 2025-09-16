@@ -1,0 +1,6 @@
+@KommoAIAgent_HostAddress = http://localhost:5121
+
+GET {{KommoAIAgent_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
