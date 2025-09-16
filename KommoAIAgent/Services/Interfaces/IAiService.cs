@@ -1,4 +1,6 @@
-﻿namespace KommoAIAgent.Services.Interfaces
+﻿using OpenAI.Chat;
+
+namespace KommoAIAgent.Services.Interfaces
 {
     /// <summary>
     /// Contrato para cualquier servicio de Inteligencia Artificial.
@@ -35,6 +37,15 @@
         /// </summary>
         /// <returns></returns>
         Task<bool> PingAsync();
+
+        /// <summary>
+        /// Recibe una lista de mensajes (con roles) y genera una respuesta completa.
+        /// </summary>
+        /// <param name="messages"></param>
+        /// <param name="maxTokens"></param>
+        /// <param name="model"></param>
+        /// <returns></returns>
+        Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null);
 
     }
 }

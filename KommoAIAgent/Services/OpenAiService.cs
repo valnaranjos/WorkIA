@@ -236,4 +236,33 @@ public class OpenAiService : IAiService
         return (await call()).Value;
     }
 
+    /// <summary>
+    /// Genera una respuesta completa a partir de una lista de mensajes (con roles), para historial dentro de la misma conversación.
+    /// </summary>
+    /// <param name="messages"></param>
+    /// <param name="maxTokens"></param>
+    /// <param name="model"></param>
+    /// <returns></returns>
+    public async Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null)
+    {
+        try
+        {
+            var mdl = model ?? _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
+            var chatClient = _client.GetChatClient(mdl);
+            var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTokens };
+
+            var completion = await CallWithRetryAsync(
+                () => chatClient.CompleteChatAsync(messages, options),
+                _logger
+            );
+
+            return completion.Content?.FirstOrDefault()?.Text ?? "";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error en CompleteAsync");
+            return "";
+        }
+    }
+
 }

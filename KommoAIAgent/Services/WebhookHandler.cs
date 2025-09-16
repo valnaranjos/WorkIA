@@ -1,6 +1,7 @@
 ﻿using KommoAIAgent.Models;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
+using OpenAI.Chat;
 
 namespace KommoAIAgent.Services
 {
@@ -14,18 +15,21 @@ namespace KommoAIAgent.Services
         private readonly ILogger<WebhookHandler> _logger;
         private readonly IConfiguration _configuration;
         private readonly IMemoryCache _cache;
+        private readonly IChatMemoryStore _conv;
 
         public WebhookHandler(
             IKommoApiService kommoService,
             IAiService aiService,
             ILogger<WebhookHandler> logger,
-            IConfiguration configuration, IMemoryCache cache)
+            IConfiguration configuration, IMemoryCache cache,
+            IChatMemoryStore conv)
         {
             _kommoService = kommoService;
             _aiService = aiService;
             _logger = logger;
             _configuration = configuration;
             _cache = cache;
+            _conv = conv;
         }
 
         /// <summary>
@@ -63,6 +67,23 @@ namespace KommoAIAgent.Services
 
             try
             {
+                //Construimos el historial de mensajes para contexto.
+                var messages = new List<ChatMessage>
+                {
+                    ChatMessage.CreateSystemMessage(
+                        "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho.")
+                };
+
+                // Traemos los últimos turnos guardados para este lead y los agregamos al prompt (NUEVO)
+                var history = _conv.Get(leadId, 10);
+                foreach (var turn in history)
+                {
+                    if (turn.Role == "assistant")
+                        messages.Add(ChatMessage.CreateAssistantMessage(turn.Content));
+                    else
+                        messages.Add(ChatMessage.CreateUserMessage(turn.Content));
+                }
+
                 string aiResponse; // Declaramos la variable que guardará la respuesta de la IA.
 
                 // Heurística: detecta imagen aunque 'Type' no venga exactamente como "image"
@@ -72,30 +93,53 @@ namespace KommoAIAgent.Services
                 {
                     _logger.LogInformation("El mensaje contiene una imagen. Usando el servicio de análisis de imagen.");
 
-                    // 1) Bajamos el adjunto desde Kommo con token
+                    // Bajamos el adjunto desde Kommo con token
                     var (bytes, mime, fileName) = await _kommoService.DownloadAttachmentAsync(imageAttachment.Url!);
 
-                    // 2) Si no viene MIME, lo inferimos por extensión
+                    //  Si no viene MIME, lo inferimos por extensión
                     if (string.IsNullOrWhiteSpace(mime))
                         mime = GuessMimeFromUrlOrName(imageAttachment.Url!, fileName);
 
-                    // 3) Prompt (si no hay caption, usa uno por defecto)
+                    // Prompt (si no hay caption, usa uno por defecto)
                     var prompt = string.IsNullOrWhiteSpace(userMessage)
                         ? "Describe la imagen y extrae cualquier texto visible."
                         : userMessage;
 
-                    // 4) IA visión por BYTES
-                    aiResponse = await _aiService.AnalyzeImageFromBytesAsync(prompt, bytes, mime);
+
+
+                        messages.Add(
+                        ChatMessage.CreateUserMessage(
+                            ChatMessageContentPart.CreateTextPart(prompt),
+                            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(bytes), mime)
+                        )
+                    );
+
+                    // Llamamos a la IA con todo el historial
+                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o");
+
+                    // Guardamos el turno en memoria para el siguiente mensaje (NUEVO)
+                    _conv.AppendUser(leadId, $"{prompt} [imagen]");
+                    _conv.AppendAssistant(leadId, aiResponse);
                 }
                 else
                 {
                     _logger.LogInformation("El mensaje es solo texto. Usando el servicio de respuesta contextual.");
-                    aiResponse = await _aiService.GenerateContextualResponseAsync(userMessage);
+              
+                    // Turno actual: texto (NUEVO)
+                    messages.Add(ChatMessage.CreateUserMessage(userMessage));
+
+                    // Llamamos a la IA con todo el historial (modelo por defecto)
+                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400);
+
+                    // Guardamos el turno en memoria para el siguiente mensaje
+                    _conv.AppendUser(leadId, userMessage);
+                    _conv.AppendAssistant(leadId, aiResponse);
+
                 }
 
                 _logger.LogInformation("Respuesta de IA recibida.");
 
-                // El resto del flujo para actualizar Kommo no cambia.
+                // Esscribimos la respuesta al campo personalizado en Kommo.
                 var fieldIdString = _configuration["Kommo:CustomFieldIds:MensajeIA"];
                 if (!long.TryParse(fieldIdString, out var fieldId))
                 {
@@ -103,9 +147,7 @@ namespace KommoAIAgent.Services
                     return;
                 }
 
-
-
-                const int KOMMO_FIELD_MAX = 8000; // ajusta si conoces el tope real
+                const int KOMMO_FIELD_MAX = 8000; //  tope real??
                 static string Truncate(string s) => s.Length <= KOMMO_FIELD_MAX ? s : s[..KOMMO_FIELD_MAX];
 
                 _logger.LogInformation("Enviando respuesta de IA al campo {FieldId} del Lead {LeadId}...", fieldId, leadId);

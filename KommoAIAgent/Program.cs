@@ -25,6 +25,10 @@ builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 // No solo registra KommoApiService, sino que también gestiona el HttpClient de forma eficiente.
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>();
 
+//Registra nuestro almacén de memoria de conversaciones.
+builder.Services.AddSingleton<IChatMemoryStore, InMemoryChatMemoryStore>();  // NUEVO
+
+// Añade soporte para caché en memoria, útil para almacenar tokens u otros datos temporales.
 builder.Services.AddMemoryCache();
 
 var app = builder.Build();
