@@ -1,0 +1,131 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|c:\\users\\dell\\source\\serticloud\\kommoaiagent\\kommoaiagent\\services\\openaiservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|solutionrelative:kommoaiagent\\services\\openaiservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|c:\\users\\dell\\source\\serticloud\\kommoaiagent\\kommoaiagent\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
+      "RelativeMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|solutionrelative:kommoaiagent\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|c:\\users\\dell\\source\\serticloud\\kommoaiagent\\kommoaiagent\\helpers\\utils.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|solutionrelative:kommoaiagent\\helpers\\utils.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|c:\\users\\dell\\source\\serticloud\\kommoaiagent\\kommoaiagent\\controllers\\kommowebhookcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|solutionrelative:kommoaiagent\\controllers\\kommowebhookcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|c:\\users\\dell\\source\\serticloud\\kommoaiagent\\kommoaiagent\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{BE690A25-3ADA-4234-90AB-3B5EE77FC232}|KommoAIAgent\\KommoAIAgent.csproj|solutionrelative:kommoaiagent\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 5,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{40ea2e6b-2121-4bb8-a43e-c83c04b51041}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:129:0:{1fc202d4-d401-403c-9834-5b218574bb67}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "appsettings.json",
+              "DocumentMoniker": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\appsettings.json",
+              "RelativeDocumentMoniker": "KommoAIAgent\\appsettings.json",
+              "ToolTip": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\appsettings.json",
+              "RelativeToolTip": "KommoAIAgent\\appsettings.json",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABQAAAABAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
+              "WhenOpened": "2025-09-16T20:24:40.536Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "Program.cs",
+              "DocumentMoniker": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Program.cs",
+              "RelativeDocumentMoniker": "KommoAIAgent\\Program.cs",
+              "ToolTip": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Program.cs*",
+              "RelativeToolTip": "KommoAIAgent\\Program.cs*",
+              "ViewState": "AgIAABoAAAAAAAAAAAAAACsAAAA5AAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-16T20:17:55.273Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "OpenAiService.cs",
+              "DocumentMoniker": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Services\\OpenAiService.cs",
+              "RelativeDocumentMoniker": "KommoAIAgent\\Services\\OpenAiService.cs",
+              "ToolTip": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Services\\OpenAiService.cs",
+              "RelativeToolTip": "KommoAIAgent\\Services\\OpenAiService.cs",
+              "ViewState": "AgIAAEUAAAAAAAAAAAAawFAAAAAbAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-16T20:13:08.874Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "Utils.cs",
+              "DocumentMoniker": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Helpers\\Utils.cs",
+              "RelativeDocumentMoniker": "KommoAIAgent\\Helpers\\Utils.cs",
+              "ToolTip": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Helpers\\Utils.cs",
+              "RelativeToolTip": "KommoAIAgent\\Helpers\\Utils.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAgAAAAkAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-16T20:12:08.028Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "KommoWebhookController.cs",
+              "DocumentMoniker": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Controllers\\KommoWebhookController.cs",
+              "RelativeDocumentMoniker": "KommoAIAgent\\Controllers\\KommoWebhookController.cs",
+              "ToolTip": "C:\\Users\\DELL\\source\\serticloud\\KommoAIAgent\\KommoAIAgent\\Controllers\\KommoWebhookController.cs*",
+              "RelativeToolTip": "KommoAIAgent\\Controllers\\KommoWebhookController.cs*",
+              "ViewState": "AgIAAEwAAAAAAAAAAAAAAGMAAAAkAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-16T20:10:21.078Z",
+              "EditorCaption": ""
+            }
+          ]
+        },
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": -1,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{3ae79031-e1bc-11d0-8f78-00a0c9110057}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{1c64b9c2-e352-428e-a56d-0ace190b99a6}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
