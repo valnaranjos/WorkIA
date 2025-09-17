@@ -18,9 +18,9 @@ public class OpenAiService : IAiService
     private readonly IConfiguration _cfg;
 
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
-    public OpenAiService(IConfiguration configuration, ILogger<OpenAiService> logger, IConfiguration cfg)
+    public OpenAiService(IConfiguration cfg, ILogger<OpenAiService> logger)
     {
-        var apiKey = configuration["OpenAI:ApiKey"];
+        var apiKey = cfg["OpenAI:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
         {
             throw new ArgumentNullException(nameof(apiKey), "La ApiKey de OpenAI no está configurada en appsettings.json");
@@ -41,7 +41,7 @@ public class OpenAiService : IAiService
 
         try
         {
-            // La lista de mensajes ahora se construye con clases diferentes.
+            // La lista de mensajes se construye con clases diferentes directo de la líbrería.
             ChatMessage[] messages =
             {
             ChatMessage.CreateSystemMessage("Eres un asistente virtual experto y amigable. Responde de forma concisa y profesional."),
@@ -53,7 +53,6 @@ public class OpenAiService : IAiService
 
             // La llamada a la API también es diferente.
             var chatClient = _client.GetChatClient(model);
-            ChatCompletion response = await chatClient.CompleteChatAsync(messages);
             var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
 
 
@@ -180,9 +179,9 @@ public class OpenAiService : IAiService
         try
         {
             var model = _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
-                        var chat = _client.GetChatClient(model);
-            var messages = new[] { ChatMessage.CreateUserMessage("ping") };
-            var res = await chat.CompleteChatAsync(messages, new ChatCompletionOptions { MaxOutputTokenCount = 3 });
+            var chat = _client.GetChatClient(model);
+            var res = await chat.CompleteChatAsync(new[] { ChatMessage.CreateUserMessage("ping") },
+            new ChatCompletionOptions { MaxOutputTokenCount = 3 });
             return res.Value.Content?.Any() == true;
         }
         catch

@@ -1,3 +1,4 @@
+using KommoAIAgent.Helpers;
 using KommoAIAgent.Services;
 using KommoAIAgent.Services.Interfaces;
 
@@ -30,6 +31,13 @@ builder.Services.AddSingleton<IChatMemoryStore, InMemoryChatMemoryStore>();  // 
 
 // Añade soporte para caché en memoria, útil para almacenar tokens u otros datos temporales.
 builder.Services.AddMemoryCache();
+
+// Registramos un buffer de mensajes en memoria para la ventana de envío de mensaes.
+builder.Services.Configure<Microsoft.Extensions.Options.OptionsWrapper<object>>((_) => { }); // no es necesario realmente, solo asegurarte que IConfiguration está
+builder.Services.AddSingleton<IMessageBuffer, InMemoryMessageBuffer>();
+
+// Registramos el servicio para manejar la última imagen por chat.
+builder.Services.AddSingleton<LastImageCache>();
 
 var app = builder.Build();
 

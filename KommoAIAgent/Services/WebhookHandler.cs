@@ -1,4 +1,5 @@
-﻿using KommoAIAgent.Models;
+﻿using KommoAIAgent.Helpers;
+using KommoAIAgent.Models;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using OpenAI.Chat;
@@ -16,13 +17,15 @@ namespace KommoAIAgent.Services
         private readonly IConfiguration _configuration;
         private readonly IMemoryCache _cache;
         private readonly IChatMemoryStore _conv;
+        private readonly IMessageBuffer _msgBuffer;
+        private readonly LastImageCache _lastImage;
 
         public WebhookHandler(
             IKommoApiService kommoService,
             IAiService aiService,
             ILogger<WebhookHandler> logger,
             IConfiguration configuration, IMemoryCache cache,
-            IChatMemoryStore conv)
+            IChatMemoryStore conv, IMessageBuffer msgBuffer, LastImageCache lastImage)
         {
             _kommoService = kommoService;
             _aiService = aiService;
@@ -30,10 +33,15 @@ namespace KommoAIAgent.Services
             _configuration = configuration;
             _cache = cache;
             _conv = conv;
+            _msgBuffer = msgBuffer;
+            _lastImage = lastImage;
         }
 
         /// <summary>
-        /// Procesa el webhook entrante siguiendo la lógica de negocio definida.
+        /// Procesa el payload del webhook entrante de Kommo.
+        /// </summary>
+        /// <param name="payload"></param>
+        /// <returns></returns>
         public async Task ProcessIncomingMessageAsync(KommoWebhookPayload payload)
         {
             // 1. Extraer y validar el mensaje (esto no cambia).
@@ -63,83 +71,82 @@ namespace KommoAIAgent.Services
             var leadId = messageDetails.LeadId.Value;
             var userMessage = messageDetails.Text ?? ""; // Usamos "" si el texto es nulo.
 
-            _logger.LogInformation("Procesando mensaje entrante para el Lead ID: {LeadId}.", leadId);
+            _logger.LogInformation("Procesando mensaje entrante para el Lead ID: {LeadId}, Encolando para debounce...", leadId);
+
+            // Debounce: acumulamos y procesamos cuando toque (ventana o imagen)
+            await _msgBuffer.OfferAsync(
+                leadId,
+                userMessage,
+                messageDetails.Attachments,
+                async (id, agg) => await ProcessAggregatedTurnAsync(id, agg.Text, agg.Attachments)
+            );
+
+            return;
+        }
+
+        /// <summary>
+        /// Porcesa un turno agregado (después de debounce).
+        /// </summary>
+        /// <param name="leadId"></param>
+        /// <param name="userText"></param>
+        /// <param name="attachments"></param>
+        /// <returns></returns>
+        private async Task ProcessAggregatedTurnAsync(long leadId, string userText, List<AttachmentInfo> attachments)
+        {
+            _logger.LogInformation("Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
+                leadId, userText, attachments?.Count ?? 0);
 
             try
             {
-                //Construimos el historial de mensajes para contexto.
-                var messages = new List<ChatMessage>
+                var messages = ChatComposer.BuildHistoryMessages(
+                    _conv,
+                    leadId,
+                    "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho.",
+                    historyTurns: 10
+                );
+
+                string aiResponse;
+
+                var img = attachments?.FirstOrDefault(AttachmentHelper.IsImage);
+
+                if (img != null && !string.IsNullOrWhiteSpace(img.Url))
                 {
-                    ChatMessage.CreateSystemMessage(
-                        "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho.")
-                };
-
-                // Traemos los últimos turnos guardados para este lead y los agregamos al prompt (NUEVO)
-                var history = _conv.Get(leadId, 10);
-                foreach (var turn in history)
-                {
-                    if (turn.Role == "assistant")
-                        messages.Add(ChatMessage.CreateAssistantMessage(turn.Content));
-                    else
-                        messages.Add(ChatMessage.CreateUserMessage(turn.Content));
-                }
-
-                string aiResponse; // Declaramos la variable que guardará la respuesta de la IA.
-
-                // Heurística: detecta imagen aunque 'Type' no venga exactamente como "image"
-                var imageAttachment = messageDetails.Attachments.FirstOrDefault(IsImageAttachment);
-
-                if (imageAttachment != null && !string.IsNullOrWhiteSpace(imageAttachment.Url))
-                {
-                    _logger.LogInformation("El mensaje contiene una imagen. Usando el servicio de análisis de imagen.");
-
-                    // Bajamos el adjunto desde Kommo con token
-                    var (bytes, mime, fileName) = await _kommoService.DownloadAttachmentAsync(imageAttachment.Url!);
-
-                    //  Si no viene MIME, lo inferimos por extensión
+                    // Procesar imagen + texto, desde URL (descargar primero)
+                    var (bytes, mime, fileName) = await _kommoService.DownloadAttachmentAsync(img.Url!);
                     if (string.IsNullOrWhiteSpace(mime))
-                        mime = GuessMimeFromUrlOrName(imageAttachment.Url!, fileName);
+                        mime = AttachmentHelper.GuessMimeFromUrlOrName(img.Url!, fileName);
 
-                    // Prompt (si no hay caption, usa uno por defecto)
-                    var prompt = string.IsNullOrWhiteSpace(userMessage)
+
+
+                    _lastImage.SetLastImage(leadId, bytes, mime);
+                    var prompt = string.IsNullOrWhiteSpace(userText)
                         ? "Describe la imagen y extrae cualquier texto visible."
-                        : userMessage;
+                        : userText;
 
-
-
-                        messages.Add(
-                        ChatMessage.CreateUserMessage(
-                            ChatMessageContentPart.CreateTextPart(prompt),
-                            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(bytes), mime)
-                        )
-                    );
-
-                    // Llamamos a la IA con todo el historial
+                    ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
                     aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o");
 
-                    // Guardamos el turno en memoria para el siguiente mensaje (NUEVO)
                     _conv.AppendUser(leadId, $"{prompt} [imagen]");
                     _conv.AppendAssistant(leadId, aiResponse);
                 }
                 else
                 {
-                    _logger.LogInformation("El mensaje es solo texto. Usando el servicio de respuesta contextual.");
-              
-                    // Turno actual: texto (NUEVO)
-                    messages.Add(ChatMessage.CreateUserMessage(userMessage));
+                    if (_lastImage.TryGetLastImage(leadId, out var last))
+                    {
+                        // Reusa la imagen reciente ⇒ el modelo sí “ve” la misma foto de la pregunta anterior
+                        ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
+                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o");
+                    }
+                    else
+                    {
+                        ChatComposer.AppendUserText(messages, userText);
+                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400);
+                    }
 
-                    // Llamamos a la IA con todo el historial (modelo por defecto)
-                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400);
-
-                    // Guardamos el turno en memoria para el siguiente mensaje
-                    _conv.AppendUser(leadId, userMessage);
+                    _conv.AppendUser(leadId, userText);
                     _conv.AppendAssistant(leadId, aiResponse);
-
                 }
 
-                _logger.LogInformation("Respuesta de IA recibida.");
-
-                // Esscribimos la respuesta al campo personalizado en Kommo.
                 var fieldIdString = _configuration["Kommo:CustomFieldIds:MensajeIA"];
                 if (!long.TryParse(fieldIdString, out var fieldId))
                 {
@@ -147,47 +154,13 @@ namespace KommoAIAgent.Services
                     return;
                 }
 
-                const int KOMMO_FIELD_MAX = 8000; //  tope real??
-                static string Truncate(string s) => s.Length <= KOMMO_FIELD_MAX ? s : s[..KOMMO_FIELD_MAX];
-
-                _logger.LogInformation("Enviando respuesta de IA al campo {FieldId} del Lead {LeadId}...", fieldId, leadId);
-                await _kommoService.UpdateLeadFieldAsync(leadId, fieldId, Truncate(aiResponse));                             
+                const int KOMMO_FIELD_MAX = 8000;
+                await _kommoService.UpdateLeadFieldAsync(leadId, fieldId, TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Ocurrió un error inesperado durante el procesamiento para el Lead ID {LeadId}", leadId);
+                _logger.LogError(ex, "Error procesando TURNO AGREGADO para Lead {LeadId}", leadId);
             }
-        }
-
-        private static bool IsImageAttachment(AttachmentInfo a)
-        {
-            // MIME explícito
-            if (!string.IsNullOrWhiteSpace(a.MimeType) &&
-                a.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Tipo generoso (a veces Kommo manda "file", "picture", etc.)
-            if (!string.IsNullOrWhiteSpace(a.Type) &&
-                a.Type.Contains("image", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Extensión en URL o nombre
-            var s = (a.Url ?? a.Name ?? "").ToLowerInvariant();
-            return s.EndsWith(".jpg") || s.EndsWith(".jpeg") || s.EndsWith(".png") ||
-                   s.EndsWith(".webp") || s.EndsWith(".gif") || s.EndsWith(".bmp") ||
-                   s.EndsWith(".tif") || s.EndsWith(".tiff");
-        }
-
-        private static string GuessMimeFromUrlOrName(string url, string? name)
-        {
-            var s = (name ?? url).ToLowerInvariant();
-            if (s.EndsWith(".png")) return "image/png";
-            if (s.EndsWith(".jpg") || s.EndsWith(".jpeg")) return "image/jpeg";
-            if (s.EndsWith(".webp")) return "image/webp";
-            if (s.EndsWith(".gif")) return "image/gif";
-            if (s.EndsWith(".bmp")) return "image/bmp";
-            if (s.EndsWith(".tif") || s.EndsWith(".tiff")) return "image/tiff";
-            return "image/jpeg";
         }
     }
 }
