@@ -12,8 +12,8 @@ namespace KommoAIAgent.Services
     {
         private class State
         {
-            public readonly List<string> Texts = new();
-            public readonly List<AttachmentInfo> Attachments = new();
+            public readonly List<string> Texts = [];
+            public readonly List<AttachmentInfo> Attachments = [];
             public DateTimeOffset FirstTs;
             public DateTimeOffset LastTs;
             public CancellationTokenSource? Cts; // para reprogramar el flush
@@ -101,7 +101,7 @@ namespace KommoAIAgent.Services
                 // Prepara aggregate (copia defensiva) para el callback
                 aggregateToSend = new AggregatedMessage(
                     Text: string.Join(" ", state.Texts).Trim(),
-                    Attachments: state.Attachments.ToList()
+                    Attachments: [.. state.Attachments]
                 );
 
                 // Si flush inmediato, limpia ya el estado; si no, se limpia al disparar
@@ -155,5 +155,29 @@ namespace KommoAIAgent.Services
             await Task.CompletedTask;
         }
 
+
+        /// <summary>
+        /// limpiar el estado del buffer para un lead específico.
+        /// </summary>
+        /// <param name="leadId"></param>
+        public void Clear(long leadId)
+        {
+            if (_states.TryRemove(leadId, out var state))
+            {
+                lock (state)
+                {
+                    // Si usara Timer para el flush diferido:
+                    //state.Timer?.Change(Timeout.Infinite, Timeout.Infinite);
+                    //state.Timer?.Dispose();
+
+                    //CancellationTokenSource para el delay:
+                    state.Cts?.Cancel();
+                    state.Cts?.Dispose();
+
+                    state.Texts.Clear();
+                    state.Attachments.Clear();
+                }
+            }
+        }
     }
 }

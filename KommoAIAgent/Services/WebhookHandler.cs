@@ -52,7 +52,7 @@ namespace KommoAIAgent.Services
                 return;
             }
 
-            // Evitar procesar duplicados usando memoria en vez de base, y así evita costos innecesarios incluso en tokens.
+            // Deduplicación simple por messageId (evita reprocesar el mismo webhook)
             var msgId = messageDetails.MessageId ?? $"{messageDetails.LeadId}-{messageDetails.Text}";
             if (_cache.TryGetValue(msgId, out _))
             {
@@ -70,22 +70,37 @@ namespace KommoAIAgent.Services
 
             var leadId = messageDetails.LeadId.Value;
             var userMessage = messageDetails.Text ?? ""; // Usamos "" si el texto es nulo.
+            var attachmentCount = messageDetails.Attachments?.Count ?? 0;
 
-            _logger.LogInformation("Procesando mensaje entrante para el Lead ID: {LeadId}, Encolando para debounce...", leadId);
+            // 4) Debounce ON/OFF (bypass para pruebas)
+            var debounceEnabled = _configuration.GetValue("Debounce:Enabled", true);
+            if (!debounceEnabled)
+            {
+                _logger.LogInformation("Debounce deshabilitado; procesando turno inmediato (LeadId={LeadId})", leadId);
+                await ProcessAggregatedTurnAsync(leadId, userMessage, messageDetails.Attachments ?? new List<AttachmentInfo>());
+                return;
+            }
 
-            // Debounce: acumulamos y procesamos cuando toque (ventana o imagen)
+            // Debounce: encolar y salir; el buffer hará flush y llamará al orquestador.
+            _logger.LogInformation(
+                "Debounce habilitado; encolando para flush (LeadId={LeadId}, text='{Text}', atts={Atts})",
+                leadId, userMessage, attachmentCount
+            );
+
             await _msgBuffer.OfferAsync(
                 leadId,
                 userMessage,
-                messageDetails.Attachments,
+                messageDetails.Attachments ?? new List<AttachmentInfo>(),
                 async (id, agg) => await ProcessAggregatedTurnAsync(id, agg.Text, agg.Attachments)
             );
 
             return;
+
         }
 
         /// <summary>
-        /// Porcesa un turno agregado (después de debounce).
+        /// Porcesa un turno agregado (después de debounce)
+        /// Es quien llama a la IA y actualiza Kommo.
         /// </summary>
         /// <param name="leadId"></param>
         /// <param name="userText"></param>

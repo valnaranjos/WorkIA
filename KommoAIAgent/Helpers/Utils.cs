@@ -30,5 +30,15 @@ namespace KommoAIAgent.Helpers
                    s.EndsWith(".webp") || s.EndsWith(".gif") || s.EndsWith(".bmp") ||
                    s.EndsWith(".tif") || s.EndsWith(".tiff");
         }
+
+        public static string? FirstNonEmpty(params string?[] values)
+        {
+            foreach (var v in values)
+            {
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+            }
+            return null;
+        }
+
     }
 }

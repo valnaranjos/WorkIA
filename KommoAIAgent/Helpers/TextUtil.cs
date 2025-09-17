@@ -14,5 +14,14 @@
         /// <returns></returns>
         public static string Truncate(string s, int max) =>
            string.IsNullOrEmpty(s) ? s : (s.Length <= max ? s : s[..max]);
+
+
+        /// <summary>
+        /// Normaliza una cadena para comparaciones: trim y minúsculas.
+        /// </summary>
+        /// <param name="s"></param>
+        /// <returns></returns>
+        public static string Normalize(string? s) =>
+              (s ?? "").Trim().ToLowerInvariant();
     }
 }

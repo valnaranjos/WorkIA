@@ -18,5 +18,11 @@ namespace KommoAIAgent.Services.Interfaces
             IReadOnlyList<AttachmentInfo> attachments,
             Func<long, AggregatedMessage, Task> onFlush,
             CancellationToken ct = default);
+
+        /// <summary>
+        /// Borra el estado del buffer para un lead específico.
+        /// </summary>
+        /// <param name="leadId"></param>
+        void Clear(long leadId);
     }
 }

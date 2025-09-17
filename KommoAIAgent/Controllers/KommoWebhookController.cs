@@ -21,18 +21,23 @@ public class KommoWebhookController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>
+    /// Endpoint para recibir el webhook entrantes de Kommo.
+    /// </summary>
+    /// <returns></returns>
     [HttpPost("incoming")]
     public async Task<IActionResult> HandleIncomingMessage()
     {
         _logger.LogInformation("--- Webhook de Kommo (form-urlencoded) recibido ---");
         try
         {
+            //Inicializamos el payload vacío.
             var payload = new KommoWebhookPayload
             {
                 Message = new MessageData { AddedMessages = [] }
             };
 
-            // 1) FORM x-www-form-urlencoded
+            //  FORM x-www-form-urlencoded
             if (Request.HasFormContentType)
             {
                 var form = await Request.ReadFormAsync();
@@ -48,40 +53,44 @@ public class KommoWebhookController : ControllerBase
                     return Ok();
                 }
 
-                string? text = FirstNonEmpty(
+                // Extrae el mensaje
+                string? text = Utils.FirstNonEmpty(
                     form["message[add][0][text]"].ToString(),
                     form["text"].ToString(),
                     form["message[text]"].ToString()
                 );
 
+
+                // Crea el objeto MessageDetails con los campos.
                 var md = new MessageDetails
                 {
-                    MessageId = FirstNonEmpty(form["message[add][0][id]"].ToString()),
-                    Type = FirstNonEmpty(form["message[add][0][type]"].ToString()),
+                    MessageId = Utils.FirstNonEmpty(form["message[add][0][id]"].ToString()),
+                    Type = Utils.FirstNonEmpty(form["message[add][0][type]"].ToString()),
                     Text = text,
-                    ChatId = FirstNonEmpty(form["message[add][0][chat_id]"].ToString()),
-                    EntityType = FirstNonEmpty(form["message[add][0][entity_type]"].ToString()),
+                    ChatId = Utils.FirstNonEmpty(form["message[add][0][chat_id]"].ToString()),
+                    EntityType = Utils.FirstNonEmpty(form["message[add][0][entity_type]"].ToString()),
                     LeadId = leadId
                 };
 
-                // (A) --- SINGULAR: message[add][0][attachment][...]  (como el Python)
-                var attachLink = FirstNonEmpty(
+                // Singular
+                var attachLink = Utils.FirstNonEmpty(
                     form["message[add][0][attachment][link]"].ToString(),
                     form["message[add][0][attachment][url]"].ToString(),
                     form["message[add][0][attachment][download_link]"].ToString()
                 );
                 if (!string.IsNullOrWhiteSpace(attachLink))
                 {
+                    //Crea el attachment con las variables que necesitamos.
                     var att = new AttachmentInfo
                     {
                         Url = attachLink,
-                        Type = FirstNonEmpty(form["message[add][0][attachment][type]"].ToString()),
-                        Name = FirstNonEmpty(form["message[add][0][attachment][file_name]"].ToString(),
+                        Type = Utils.FirstNonEmpty(form["message[add][0][attachment][type]"].ToString()),
+                        Name = Utils.FirstNonEmpty(form["message[add][0][attachment][file_name]"].ToString(),
                                                  form["message[add][0][attachment][name]"].ToString()),
-                        MimeType = FirstNonEmpty(form["message[add][0][attachment][mime_type]"].ToString(),
+                        MimeType = Utils.FirstNonEmpty(form["message[add][0][attachment][mime_type]"].ToString(),
                                                  form["message[add][0][attachment][content_type]"].ToString())
                     };
-                    // si type parece MIME, úsalo
+                    // si type parece MIME
                     if (string.IsNullOrWhiteSpace(att.MimeType) &&
                         !string.IsNullOrWhiteSpace(att.Type) &&
                         att.Type.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
@@ -92,7 +101,7 @@ public class KommoWebhookController : ControllerBase
                        Utils.MaskUrl(att.Url), att.Type, att.MimeType);
                 }
 
-                // (B) --- PLURAL: message[add][0][attachments][i][...]
+                //PLURAL: message[add][0][attachments][i][...]
                 foreach (var att in ExtractAttachmentsPlural(form))
                 {
                     md.Attachments.Add(att);
@@ -104,7 +113,7 @@ public class KommoWebhookController : ControllerBase
             }
             else
             {
-                // 2) JSON (por si Kommo te lo envía así en alguna integración)
+                // JSON (por si Kommo lo envía así en integración)
                 using var reader = new StreamReader(Request.Body);
                 var jsonStr = await reader.ReadToEndAsync();
                 if (!string.IsNullOrWhiteSpace(jsonStr))
@@ -125,7 +134,7 @@ public class KommoWebhookController : ControllerBase
                 }
             }
 
-            // 3) Fire-and-forget
+            // Fire-and-forget
             _ = _webhookHandler.ProcessIncomingMessageAsync(payload);
             return Ok("Webhook received.");
         }
@@ -137,17 +146,10 @@ public class KommoWebhookController : ControllerBase
     }
 
 
-    // Helpers
-    private static string? FirstNonEmpty(params string?[] values)
-    {
-        foreach (var v in values)
-        {
-            if (!string.IsNullOrWhiteSpace(v)) return v;
-        }
-        return null;
-    }
+   
+  
 
-    // Extrae attachments de la forma PLURAL: message[add][0][attachments][i][...]
+    // Lógica para extraer attachments de la forma PLURAL: message[add][0][attachments][i][...]
     private static IEnumerable<AttachmentInfo> ExtractAttachmentsPlural(IFormCollection form)
     {
         var map = new Dictionary<int, AttachmentInfo>();
@@ -201,6 +203,7 @@ public class KommoWebhookController : ControllerBase
             }
         }
 
+        //Para cada attachment válido (con URL), lo devolvemos.
         foreach (var kv in map.OrderBy(k => k.Key))
         {
             var a = kv.Value;
@@ -209,7 +212,7 @@ public class KommoWebhookController : ControllerBase
         }
     }
 
-    // Extrae desde JSON similar al Python (message -> add[0] -> attachment)
+    // Lógica que extrae desde JSON
     private static MessageDetails? ExtractFromJson(string json, ILogger logger)
     {
         try
@@ -241,13 +244,13 @@ public class KommoWebhookController : ControllerBase
             {
                 var a = new AttachmentInfo
                 {
-                    Url = FirstNonEmpty(att.TryGetProperty("link", out var l) ? l.GetString() : null,
+                    Url = Utils.FirstNonEmpty(att.TryGetProperty("link", out var l) ? l.GetString() : null,
                                              att.TryGetProperty("url", out var u) ? u.GetString() : null,
                                              att.TryGetProperty("download_link", out var d) ? d.GetString() : null),
                     Type = att.TryGetProperty("type", out var ty) ? ty.GetString() : null,
-                    Name = FirstNonEmpty(att.TryGetProperty("file_name", out var fn) ? fn.GetString() : null,
+                    Name = Utils.FirstNonEmpty(att.TryGetProperty("file_name", out var fn) ? fn.GetString() : null,
                                              att.TryGetProperty("name", out var nm) ? nm.GetString() : null),
-                    MimeType = FirstNonEmpty(att.TryGetProperty("mime_type", out var mm) ? mm.GetString() : null,
+                    MimeType = Utils.FirstNonEmpty(att.TryGetProperty("mime_type", out var mm) ? mm.GetString() : null,
                                              att.TryGetProperty("content_type", out var ct) ? ct.GetString() : null)
                 };
                 if (!string.IsNullOrWhiteSpace(a.Url)) md.Attachments.Add(a);
