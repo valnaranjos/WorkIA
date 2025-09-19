@@ -25,6 +25,21 @@ namespace KommoAIAgent.Services.Interfaces
         Task<KommoLead?> GetLeadContextByIdAsync(long leadId);
 
 
+        /// <summary>
+        /// Descarga un archivo adjunto desde una URL pública, valida el tamaño y el tipo MIME.
+        /// </summary>
+        /// <param name="url"></param>
+        /// <returns></returns>
         Task<(byte[] bytes, string mime, string? fileName)> DownloadAttachmentAsync(string url);
+
+
+        /// <summary>
+        /// Actualiza directamente el campo MensajeIA de un lead (según config del tenant).
+        /// </summary>
+        /// <param name="leadId">El ID del lead a actualizar.</param>
+        /// <param name="texto">El valor de texto a poner en MensajeIA.</param>
+        /// <param name="ct">Token de cancelación opcional.</param>
+        Task UpdateLeadMensajeIAAsync(long leadId, string texto, CancellationToken ct = default);
+
     }
 }

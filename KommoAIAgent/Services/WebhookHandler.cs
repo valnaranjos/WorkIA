@@ -87,6 +87,7 @@ namespace KommoAIAgent.Services
                 leadId, userMessage, attachmentCount
             );
 
+            // Enviar al buffer (que agrupa por LeadId y espera un tiempo antes de llamar al orquestador)
             await _msgBuffer.OfferAsync(
                 leadId,
                 userMessage,
@@ -113,6 +114,7 @@ namespace KommoAIAgent.Services
 
             try
             {
+                // Construir el historial de mensajes para enviar a la IA
                 var messages = ChatComposer.BuildHistoryMessages(
                     _conv,
                     leadId,
@@ -132,7 +134,7 @@ namespace KommoAIAgent.Services
                         mime = AttachmentHelper.GuessMimeFromUrlOrName(img.Url!, fileName);
 
 
-
+                    // Guardar en caché la última imagen para este lead
                     _lastImage.SetLastImage(leadId, bytes, mime);
                     var prompt = string.IsNullOrWhiteSpace(userText)
                         ? "Describe la imagen y extrae cualquier texto visible."
@@ -162,15 +164,9 @@ namespace KommoAIAgent.Services
                     _conv.AppendAssistant(leadId, aiResponse);
                 }
 
-                var fieldIdString = _configuration["Kommo:CustomFieldIds:MensajeIA"];
-                if (!long.TryParse(fieldIdString, out var fieldId))
-                {
-                    _logger.LogError("El ID del campo personalizado 'MensajeIA' no está configurado correctamente.");
-                    return;
-                }
-
+                // Actualizar el lead en Kommo con la respuesta de la IA
                 const int KOMMO_FIELD_MAX = 8000;
-                await _kommoService.UpdateLeadFieldAsync(leadId, fieldId, TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX));
+                await _kommoService.UpdateLeadMensajeIAAsync(leadId, TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX));
             }
             catch (Exception ex)
             {

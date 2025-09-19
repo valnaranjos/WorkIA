@@ -1,7 +1,9 @@
-﻿using KommoAIAgent.Helpers;
+﻿using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Helpers;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI; 
 using OpenAI.Chat;
+using OpenAI.Realtime;
 using System.ClientModel;
 using System.Reflection;
 
@@ -9,35 +11,40 @@ using System.Reflection;
 namespace KommoAIAgent.Services;
 
 /// <summary>
-/// Implementación del servicio de IA usando la NUEVA LIBRERÍA OFICIAL de OpenAI.
+///Implementación del servicio de IA (SDK oficial OpenAI) con configuración por tenant.
 /// </summary>
 public class OpenAiService : IAiService
 {
     private readonly OpenAIClient _client;
     private readonly ILogger<OpenAiService> _logger;
-    private readonly IConfiguration _cfg;
+    private readonly ITenantContext _tenant;
 
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
-    public OpenAiService(IConfiguration cfg, ILogger<OpenAiService> logger)
+    public OpenAiService(ITenantContext tenant, ILogger<OpenAiService> logger)
     {
-        var apiKey = cfg["OpenAI:ApiKey"];
+        _logger = logger;
+        _tenant = tenant;
+
+        var apiKey = _tenant.Config.OpenAI.ApiKey;
         if (string.IsNullOrEmpty(apiKey))
         {
-            throw new ArgumentNullException(nameof(apiKey), "La ApiKey de OpenAI no está configurada en appsettings.json");
+            throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{_tenant.CurrentTenantId}'");
+
         }
 
         // Creamos el cliente oficial de OpenAI.
         _client = new OpenAIClient(apiKey);
-        _logger = logger;
-        _cfg = cfg;
+        
     }
 
     /// <summary>
-    /// Cumple con el contrato de IAiService. Genera una respuesta usando la librería oficial.
+    /// Genera una respuesta de texto a partir de un prompt de usuario.
     /// </summary>
     public async Task<string> GenerateContextualResponseAsync(string textPrompt)
     {
-        _logger.LogInformation("Enviando prompt a OpenAI (con la librería oficial...");
+        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
+        var maxTok = 400;
+        _logger.LogInformation("↗️ OpenAI.Generate (tenant={Tenant}, model={Model})", _tenant.CurrentTenantId, model);
 
         try
         {
@@ -48,26 +55,23 @@ public class OpenAiService : IAiService
             ChatMessage.CreateUserMessage(textPrompt)
              };
 
-            var model = _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
-            var maxTok = int.TryParse(_cfg["OpenAI:MaxOutputTokens"], out var v) ? v : 400;
-
-            // La llamada a la API también es diferente.
             var chatClient = _client.GetChatClient(model);
             var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
 
-
+            // Llamada con retry en 429/503
             var completion = await CallWithRetryAsync(
             () => chatClient.CompleteChatAsync(messages, options),
             _logger
              );
 
+            // Extrae la respuesta del primer choice
             var aiResponse = completion.Content?.FirstOrDefault()?.Text;
-            _logger.LogInformation("Respuesta recibida de OpenAI exitosamente.");
+            _logger.LogInformation("Respuesta recibida de OpenAI exitosamente. (tenant={Tenant})", _tenant.CurrentTenantId);
             return aiResponse ?? "No se pudo obtener una respuesta.";
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Ocurrió una excepción al comunicarse con la API oficial de OpenAI.");
+            _logger.LogError(ex, "Ocurrió una excepción al comunicarse con la API oficial de OpenAI.(tenant={Tenant})", _tenant.CurrentTenantId);
             return "Hubo un error crítico al contactar al servicio de IA.";
         }
     }
@@ -80,47 +84,38 @@ public class OpenAiService : IAiService
     /// <returns></returns>
     public async Task<string> AnalyzeImageAndRespondAsync(string textPrompt, string imageUrl)
     {
-        _logger.LogInformation("Enviando prompt de IMAGEN Y TEXTO a OpenAI (modelo GPT-4o)...");
-        _logger.LogInformation("URL de la imagen: {ImageUrl}", Utils.MaskUrl(imageUrl));
+        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
+        var maxTok = 400;
+
+        _logger.LogInformation("↗️ OpenAI.Vision-URL (tenant={Tenant}, model={Model}, url={Url})",
+            _tenant.CurrentTenantId, model, Utils.MaskUrl(imageUrl));
 
         try
         {
             ChatMessage[] messages =
             [
-            ChatMessage.CreateSystemMessage(
-                "Eres un asistente virtual experto. Analiza la imagen proporcionada y responde de forma útil y concisa."
-            ),
-            ChatMessage.CreateUserMessage(
-                ChatMessageContentPart.CreateTextPart(textPrompt),
+                ChatMessage.CreateSystemMessage("Eres un asistente virtual experto. Analiza la imagen proporcionada y responde de forma útil y concisa."),
+                    ChatMessage.CreateUserMessage(
+                        ChatMessageContentPart.CreateTextPart(textPrompt ?? string.Empty),
+                        ChatMessageContentPart.CreateImagePart(new Uri(imageUrl))   // URL pública
+                    )
+            ];
 
-                // URL pública/estable:
-                ChatMessageContentPart.CreateImagePart(new Uri(imageUrl))
-                // Si requiere auth/expira: ChatMessageContentPart.CreateImage(imageBytes, "image/png")
-            )
-        ];
-
-            //Trae de la configuración de appsettings.json
-            var model = _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
-            var maxTok = int.TryParse(_cfg["OpenAI:MaxOutputTokens"], out var v) ? v : 400;
-
-
-            var chatClient = _client.GetChatClient(model); // _client: OpenAIClient inyectado
+            var chatClient = _client.GetChatClient(model);
             var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
 
-
             var completion = await CallWithRetryAsync(
-            () => chatClient.CompleteChatAsync(messages, options),
-            _logger
-             );
-
+                () => chatClient.CompleteChatAsync(messages, options),
+                _logger
+            );
 
             var aiResponse = completion.Content.FirstOrDefault()?.Text;
-            _logger.LogInformation("Respuesta de análisis de imagen recibida de OpenAI exitosamente.");
+            _logger.LogInformation("✅ OpenAI Vision OK (tenant={Tenant})", _tenant.CurrentTenantId);
             return aiResponse ?? "No se pudo obtener una respuesta sobre la imagen.";
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Ocurrió una excepción durante el análisis de imagen con OpenAI.");
+            _logger.LogError(ex, "❌ OpenAI Vision error (tenant={Tenant})", _tenant.CurrentTenantId);
             return "Hubo un error crítico al analizar la imagen con la IA.";
         }
     }
@@ -134,37 +129,38 @@ public class OpenAiService : IAiService
     /// <returns></returns>
     public async Task<string> AnalyzeImageFromBytesAsync(string textPrompt, byte[] imageBytes, string mimeType)
     {
-        _logger.LogInformation("Enviando IMAGEN (bytes) + TEXTO a OpenAI (GPT-4o)…");
+        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
+        var maxTok = 400;
+
+        _logger.LogInformation("↗️ OpenAI.Vision-Bytes (tenant={Tenant}, model={Model}, mime={Mime})",
+            _tenant.CurrentTenantId, model, mimeType);
 
         try
         {
             ChatMessage[] messages =
-           [
+            [
                 ChatMessage.CreateSystemMessage("Eres un analista de imágenes. Responde breve, claro y útil."),
-                ChatMessage.CreateUserMessage(
-                    ChatMessageContentPart.CreateTextPart(textPrompt ?? "Describe la imagen y extrae cualquier texto visible."),
-                    ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(imageBytes), mimeType)
-                )
+                    ChatMessage.CreateUserMessage(
+                        ChatMessageContentPart.CreateTextPart(textPrompt ?? "Describe la imagen y extrae cualquier texto visible."),
+                        ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(imageBytes), mimeType)
+                    )
             ];
 
-            var model = _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
-            var maxTok = int.TryParse(_cfg["OpenAI:MaxOutputTokens"], out var v) ? v : 400;
-           
-            var chatClient = _client.GetChatClient(model); // o gpt-4o-mini para abaratar
+            var chatClient = _client.GetChatClient(model);
             var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
 
             var completion = await CallWithRetryAsync(
-            () => chatClient.CompleteChatAsync(messages, options),
-            _logger
+                () => chatClient.CompleteChatAsync(messages, options),
+                _logger
             );
 
-
             var aiText = completion.Content?.FirstOrDefault()?.Text;
+            _logger.LogInformation("✅ OpenAI Vision BYTES OK (tenant={Tenant})", _tenant.CurrentTenantId);
             return aiText ?? "No pude extraer información de la imagen.";
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Excepción durante análisis de imagen con OpenAI.");
+            _logger.LogError(ex, "❌ OpenAI Vision BYTES error (tenant={Tenant})", _tenant.CurrentTenantId);
             return "⚠️ No pude analizar la imagen por ahora. Un agente te ayudará enseguida.";
         }
     }
@@ -178,10 +174,12 @@ public class OpenAiService : IAiService
     {
         try
         {
-            var model = _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
+            var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
             var chat = _client.GetChatClient(model);
             var res = await chat.CompleteChatAsync(new[] { ChatMessage.CreateUserMessage("ping") },
             new ChatCompletionOptions { MaxOutputTokenCount = 3 });
+
+            // Si obtenemos cualquier contenido, consideramos que está OK.
             return res.Value.Content?.Any() == true;
         }
         catch
@@ -246,7 +244,7 @@ public class OpenAiService : IAiService
     {
         try
         {
-            var mdl = model ?? _cfg["OpenAI:Model"] ?? "gpt-4o-mini";
+            var mdl = model ?? _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
             var chatClient = _client.GetChatClient(mdl);
             var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTokens };
 

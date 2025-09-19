@@ -1,153 +1,227 @@
-﻿using System.Net.Http.Headers;
-using System.Text;
+﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Models;
 using KommoAIAgent.Services.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Net.Http.Headers;
+using System.Text;
 
 namespace KommoAIAgent.Services
 {
     /// <summary>
-    /// Implementación concreta para interactuar con la API V4 de Kommo.
+    /// Cliente de Kommo V4 adaptado a multi-tenant.
+    /// NO configura HttpClient en el ctor; arma URL absoluta y Authorization por request.
     /// </summary>
     public class KommoApiService : IKommoApiService
     {
         private readonly HttpClient _httpClient;
         private readonly ILogger<KommoApiService> _logger;
-        private readonly IConfiguration _configuration;
+        private readonly ITenantContext _tenant;
 
-        public KommoApiService(HttpClient httpClient, IConfiguration configuration, ILogger<KommoApiService> logger)
+       
+        public KommoApiService(HttpClient httpClient, ILogger<KommoApiService> logger, ITenantContext tenant)
         {
             _httpClient = httpClient;
             _logger = logger;
-            _configuration = configuration;
-
-            // Configuramos el HttpClient con la URL base y el token de acceso desde appsettings.json
-            var baseUrl = _configuration["Kommo:BaseUrl"];
-            var accessToken = _configuration["Kommo:AccessToken"];
-
-            if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(accessToken))
-            {
-                throw new InvalidOperationException("La BaseUrl o el AccessToken de Kommo no están configurados.");
-            }
-
-            _httpClient.BaseAddress = new Uri(baseUrl);
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            _tenant = tenant;
         }
 
         /// <summary>
-        /// Actualiza un campo personalizado del lead. Este es el método clave para nuestro objetivo.
+        /// Construye un HttpRequestMessage con URL absoluta + Authorization por tenant.
+        /// </summary>
+        private HttpRequestMessage BuildRequest(HttpMethod method, string relativePath, HttpContent? content = null)
+        {
+            // BaseUrl del tenant actual
+            var baseUrl = _tenant.Config.Kommo.BaseUrl.TrimEnd('/');
+            var url = new Uri(new Uri(baseUrl + "/"), relativePath.TrimStart('/'));
+
+            var req = new HttpRequestMessage(method, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tenant.Config.Kommo.AccessToken);
+            if (content != null) req.Content = content;
+            return req;
+        }
+
+
+        /// <summary>
+        /// Actualiza un campo personalizado del lead "Mensaje IA". Método clave.
+        /// De aquí envía la respuesta de la IA al campo personalizado Kommo.
+        /// Se podrían actualizar más campos si fuese necesario.
         /// </summary>
         public async Task UpdateLeadFieldAsync(long leadId, long fieldId, string value)
         {
-            var endpoint = $"/api/v4/leads/{leadId}";
-            _logger.LogInformation("Actualizando campo {FieldId} para el lead {LeadId}...", fieldId, leadId);
-
-            try
+            if (string.IsNullOrWhiteSpace(value))
             {
-                // Kommo requiere una estructura JSON específica y anidada para actualizar campos personalizados.
-                var payload = new
-                {
-                    custom_fields_values = new[]
-                    {
-                    new
-                    {
-                        field_id = fieldId,
-                        values = new[]
-                        {
-                            new { value }
-                        }
-                    }
-                }
-                };
-
-                var jsonPayload = JsonConvert.SerializeObject(payload);
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                // La API de Kommo usa el método PATCH para actualizaciones parciales.
-                var response = await _httpClient.PatchAsync(endpoint, content);
-
-                if (response.IsSuccessStatusCode)
-                {
-                    _logger.LogInformation("Campo personalizado del lead {LeadId} actualizado exitosamente.", leadId);
-                }
-                else
-                {
-                    // Si falla, registramos el error que nos devuelve Kommo para poder depurarlo.
-                    var errorBody = await response.Content.ReadAsStringAsync();
-                    _logger.LogError("Error al actualizar el lead {LeadId}. Status: {StatusCode}. Response: {ErrorBody}",
-                        leadId, response.StatusCode, errorBody);
-                }
+                _logger.LogWarning("UpdateLeadFieldAsync: value vacío; skip (lead={LeadId}, field={FieldId}, tenant={Tenant})",
+                    leadId, fieldId, _tenant.CurrentTenantId);
+                return;
             }
-            catch (Exception ex)
+
+            // Construye el payload.
+            var payload = new
             {
-                _logger.LogError(ex, "Ocurrió una excepción al intentar actualizar el lead {LeadId}.", leadId);
+                custom_fields_values = new[]
+                {
+            new
+            {
+                field_id = fieldId,
+                values = new[] { new { value } } // texto/textarea largo.
+            }
+        }
+            };
+
+            var json = JsonConvert.SerializeObject(payload);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            // PATCH unitario
+            var path = $"/api/v4/leads/{leadId}";
+            using var req = BuildRequest(HttpMethod.Patch, path, content);
+
+            _logger.LogInformation("PATCH (unitario) lead {LeadId} field {FieldId} (tenant={Tenant})",
+                leadId, fieldId, _tenant.CurrentTenantId);
+
+            using var res = await _httpClient.SendAsync(req);
+            var body = await res.Content.ReadAsStringAsync();
+
+            if (!res.IsSuccessStatusCode)
+            {
+                _logger.LogError("PATCH unitario error {Status} (lead={LeadId}, field={FieldId}) → {Body}",
+                    (int)res.StatusCode, leadId, fieldId, body);
+                return;
+            }
+
+            _logger.LogInformation("PATCH unitario OK (lead={LeadId}, field={FieldId}) → {Body}",
+                leadId, fieldId, body);
+
+            // Verificación con 3 reintentos (200ms, 700ms, 1500ms)
+            var delays = new[] { 200, 700, 1500 };
+            string? seen = null;
+
+            for (int i = 0; i < delays.Length; i++)
+            {
+                await Task.Delay(delays[i]);
+
+                using var getReq = BuildRequest(HttpMethod.Get, $"/api/v4/leads/{leadId}");
+                using var getRes = await _httpClient.SendAsync(getReq);
+                var getBody = await getRes.Content.ReadAsStringAsync();
+
+                if (!getRes.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("GET verify fallo {Status} (lead={LeadId}) → {Body}",
+                        (int)getRes.StatusCode, leadId, getBody);
+                    continue;
+                }
+
+                var lead = Newtonsoft.Json.Linq.JObject.Parse(getBody);
+                var cfv = (Newtonsoft.Json.Linq.JArray?)lead["custom_fields_values"];
+                var field = (Newtonsoft.Json.Linq.JObject?)cfv?
+                    .FirstOrDefault(x => x["field_id"]?.Value<long>() == fieldId);
+
+                seen = field?["values"]?.FirstOrDefault()?["value"]?.Value<string>();
+
+                _logger.LogInformation("Verificación[{Try}] CF {FieldId} en lead {LeadId} → «{Value}» (tenant={Tenant})",
+                    i + 1, fieldId, leadId, seen, _tenant.CurrentTenantId);
+
+                if (!string.IsNullOrWhiteSpace(seen)) break;
+            }
+
+            if (string.IsNullOrWhiteSpace(seen))
+            {
+                _logger.LogWarning("Tras PATCH unitario, el CF {FieldId} de lead {LeadId} quedó vacío (tenant={Tenant}).",
+                    fieldId, leadId, _tenant.CurrentTenantId);
             }
         }
 
         /// <summary>
-        /// Obtiene el contexto de un lead. No lo usaremos en V1.0 pero lo dejamos preparado.
+        /// Helper para mejorar ergonomía en el método anterior, más fácil de usar.
+        /// </summary>
+        /// <param name="leadId"></param>
+        /// <param name="texto"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        public Task UpdateLeadMensajeIAAsync(long leadId, string texto, CancellationToken ct = default)
+    => UpdateLeadFieldAsync(leadId, _tenant.Config.Kommo.FieldIds.MensajeIA, texto);
+
+        /// <summary>
+        /// Obtiene el contexto de un lead. No se usa ya, pero queda preparado para futuras mejoras.
         /// </summary>
         public async Task<KommoLead?> GetLeadContextByIdAsync(long leadId)
         {
-            var endpoint = $"/api/v4/leads/{leadId}?with=contacts";
-            _logger.LogInformation("Obteniendo contexto para el lead {LeadId}...", leadId);
+
+            _logger.LogInformation("Obteniendo contexto para lead {LeadId} (tenant={Tenant})...",
+                leadId, _tenant.CurrentTenantId);
+
 
             try
             {
-                var response = await _httpClient.GetAsync(endpoint);
-                if (!response.IsSuccessStatusCode)
+                using var req = BuildRequest(HttpMethod.Get, $"/api/v4/leads/{leadId}?with=contacts");
+                using var res = await _httpClient.SendAsync(req);
+
+                if (!res.IsSuccessStatusCode)
                 {
-                    _logger.LogWarning("No se pudo obtener el lead {LeadId}. Status: {StatusCode}", leadId, response.StatusCode);
+                    _logger.LogWarning("Kommo GET lead {LeadId} falló ({Status}) (tenant={Tenant})",
+                        leadId, res.StatusCode, _tenant.CurrentTenantId);
                     return null;
                 }
 
-                var jsonString = await response.Content.ReadAsStringAsync();
-                var leadJson = JObject.Parse(jsonString);
+                var json = await res.Content.ReadAsStringAsync();
+                var leadJson = JObject.Parse(json);
 
-                // Extraemos los datos que nos interesan del JSON de Kommo.
-                var lead = new KommoLead
+                return new KommoLead
                 {
                     Id = leadJson["id"]?.Value<long>() ?? 0,
                     Name = leadJson["name"]?.Value<string>() ?? "Cliente"
-                    // Aquí podríamos añadir lógica para extraer etiquetas (tags) si las necesitáramos.
                 };
-
-                return lead;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Ocurrió una excepción al obtener el lead {LeadId}", leadId);
+                _logger.LogError(ex, "Excepción al obtener lead {LeadId} (tenant={Tenant})",
+                     leadId, _tenant.CurrentTenantId);
                 return null;
             }
         }
 
+        /// <summary>
+        /// Descarga un adjunto desde una URL pública que se obtiene de Kommo.
+        /// Valida el tamaño y el tipo MIME para asegurarse de que es una imagen adecuada. 
+        /// </summary>
+        /// <param name="url"></param>
+        /// <returns></returns>
+        /// <exception cref="InvalidOperationException"></exception>
         public async Task<(byte[] bytes, string mime, string? fileName)> DownloadAttachmentAsync(string url)
         {
-             // Si Kommo manda URL relativa, convierte a absoluta usando la BaseAddress
+            // Si Kommo manda URL relativa, convierte a absoluta usando la BaseUrl del tenant.
             var absolute = Uri.TryCreate(url, UriKind.Absolute, out var u)
                 ? u
-                : new Uri(_httpClient.BaseAddress!, url);
+                : new Uri(new Uri(_tenant.Config.Kommo.BaseUrl.TrimEnd('/') + "/"), url.TrimStart('/'));
 
             using var req = new HttpRequestMessage(HttpMethod.Get, absolute);
+
+            // Si la descarga requiere auth (algunas lo piden)
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tenant.Config.Kommo.AccessToken);
 
             using var res = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
             res.EnsureSuccessStatusCode();
 
             var len = res.Content.Headers.ContentLength;
+
+            // Limitamos el tamaño de la imagen para evitar demasiado, sino envía error.
             if (len.HasValue && len.Value > 15_000_000) // 15 MB aprox.
                 throw new InvalidOperationException($"Adjunto demasiado grande: {len} bytes");
+
+
+            // Validamos que sea una imagen por el MIME, sino envía error.
             var mime = res.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
             if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"MIME no soportado para visión: {mime}");
-           
+
             var name = res.Content.Headers.ContentDisposition?.FileName?.Trim('"');
             var bytes = await res.Content.ReadAsByteArrayAsync();
 
             _logger.LogInformation("Descargado adjunto {Name} ({Mime}) tamaño={Len} bytes", name ?? "(sin nombre)", mime, bytes.Length);
             return (bytes, mime, name);
 
-            //Kommo a veces no envía Content-Type así que se infiere el MIME.
-        }
+            //Kommo A VECES no envía Content-Type así que se infiere el MIME.
+        }      
+
     }
 }

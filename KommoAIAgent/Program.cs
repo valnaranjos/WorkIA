@@ -1,4 +1,7 @@
+using KommoAIAgent.Api.Middleware;
+using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Helpers;
+using KommoAIAgent.Infraestructure.Tenancy;
 using KommoAIAgent.Services;
 using KommoAIAgent.Services.Interfaces;
 
@@ -6,52 +9,60 @@ using KommoAIAgent.Services.Interfaces;
 var builder = WebApplication.CreateBuilder(args);
 
 
-// --- 1. Configuración de Servicios (Contenedor de Inyección de Dependencias) ---
+//Configuración de Servicios- Contenedor de Inyección de Dependencias ---
 
 // Añade los servicios básicos para una API web y para la documentación con Swagger.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Aquí registramos nuestros servicios personalizados.
-// Usamos "AddScoped" que significa que se creará una nueva instancia de estos servicios para cada petición web.
+// -------------------- MultiTenancy: opciones + servicios --------------------
+// Vincula "MultiTenancy" del appsettings.json -> MultiTenancyOptions (usado por JsonTenantConfigProvider)
+builder.Services.Configure<MultiTenancyOptions>(
+    builder.Configuration.GetSection("MultiTenancy")
+);
 
-// Registra nuestro servicio de IA.
-builder.Services.AddScoped<IAiService, OpenAiService>();
+// Proveedor de config por tenant, resolver de tenant y accessor del contexto
+builder.Services.AddSingleton<ITenantConfigProvider, JsonTenantConfigProvider>();
+builder.Services.AddSingleton<ITenantResolver, TenantResolver>();
+builder.Services.AddSingleton<ITenantContextAccessor, TenantContextAccessor>();
+builder.Services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<ITenantContextAccessor>().Current);
 
-// Registra nuestro servicio orquestador.
+// -------------------- IA y Webhook --------------------
+builder.Services.AddScoped<IAiService, OpenAiService>();   // OpenAiService ya adaptado a multi-tenant (lazy)
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 
-// Esta es la forma moderna y correcta de registrar servicios que usan HttpClient.
-// No solo registra KommoApiService, sino que también gestiona el HttpClient de forma eficiente.
+
+// -------------------- Kommo HTTP Client (typed) por tenant --------------------
+// Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>();
 
-//Registra nuestro almacén de memoria de conversaciones.
-builder.Services.AddSingleton<IChatMemoryStore, InMemoryChatMemoryStore>();  // NUEVO
+//Servicio de almacén de memoria de conversaciones.
+builder.Services.AddSingleton<IChatMemoryStore, InMemoryChatMemoryStore>();
 
-// Añade soporte para caché en memoria, útil para almacenar tokens u otros datos temporales.
+// Soporte para caché en memoria, datos temporales e historial dentro de conversaciones.
 builder.Services.AddMemoryCache();
 
-// Registramos un buffer de mensajes en memoria para la ventana de envío de mensaes.
-builder.Services.Configure<Microsoft.Extensions.Options.OptionsWrapper<object>>((_) => { }); // no es necesario realmente, solo asegurarte que IConfiguration está
+// Buffer de mensajes en memoria para la ventana de envío de mensajes.
 builder.Services.AddSingleton<IMessageBuffer, InMemoryMessageBuffer>();
 
-// Registramos el servicio para manejar la última imagen por chat.
+// Servicio para manejar la última imagen por chat.
 builder.Services.AddSingleton<LastImageCache>();
 
 var app = builder.Build();
 
 
-// Configure the HTTP request pipeline.
+// HTTP request pipeline.
 
-// Habilitamos Swagger solo cuando estamos desarrollando. 
-// Esto nos da una página útil para probar nuestra API si lo necesitamos.
+// Habilitamos Swagger solo para DESARROLLO. 
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+//Middleware 
+app.UseMiddleware<TenantResolutionMiddleware>();
 
 // Punto de entrada para verificar health check de la IA.
 app.MapGet("/health/ai", async (IAiService ai) =>
@@ -60,11 +71,14 @@ app.MapGet("/health/ai", async (IAiService ai) =>
     return ok ? Results.Ok(new { ai = "ok" }) : Results.StatusCode(503);
 });
 
+//Diagnóstico de tenant actual
+app.MapGet("/__whoami", (ITenantContext t) =>
+    Results.Json(new { tenant = t.CurrentTenantId.Value, baseUrl = t.Config.Kommo.BaseUrl })
+);
 
-// Redirige las peticiones HTTP a HTTPS.
+
 app.UseHttpsRedirection();
 
-// Habilita el sistema para que las peticiones lleguen a nuestros controladores.
 app.MapControllers();
 
 app.Run();

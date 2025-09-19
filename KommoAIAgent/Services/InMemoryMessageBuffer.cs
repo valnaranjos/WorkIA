@@ -28,6 +28,7 @@ namespace KommoAIAgent.Services
         public InMemoryMessageBuffer(IConfiguration cfg, ILogger<InMemoryMessageBuffer> logger)
         {
             _logger = logger;
+            //Trae la configuración de ventana y ráfaga máxima desde configuración, por defecto 2s y 8s.
             var w = int.TryParse(cfg["Debounce:WindowMs"], out var ms) ? ms : 2000;
             var b = int.TryParse(cfg["Debounce:MaxBurstMs"], out var bs) ? bs : 8000;
             _window = TimeSpan.FromMilliseconds(w);
@@ -170,7 +171,7 @@ namespace KommoAIAgent.Services
                     //state.Timer?.Change(Timeout.Infinite, Timeout.Infinite);
                     //state.Timer?.Dispose();
 
-                    //CancellationTokenSource para el delay:
+                    //Pero usé CancellationTokenSource para el delay:
                     state.Cts?.Cancel();
                     state.Cts?.Dispose();
 
