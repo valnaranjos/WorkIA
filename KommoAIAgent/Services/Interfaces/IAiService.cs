@@ -45,7 +45,7 @@ namespace KommoAIAgent.Services.Interfaces
         /// <param name="maxTokens"></param>
         /// <param name="model"></param>
         /// <returns></returns>
-        Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null);
+        Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null, CancellationToken ct = default);
 
     }
 }

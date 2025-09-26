@@ -29,6 +29,41 @@ public class KommoWebhookController : ControllerBase
     public async Task<IActionResult> HandleIncomingMessage()
     {
         _logger.LogInformation("--- Webhook de Kommo (form-urlencoded) recibido ---");
+
+        // DEBUG: volcado temporal de todo lo que llega en form-urlencoded
+        try
+        {
+            var headerTenant = HttpContext.Request.Headers["X-Tenant-Slug"].ToString();
+            _logger.LogInformation("DBG Webhook headers: X-Tenant-Slug={Tenant}, Path={Path}, Query={QueryString}",
+                headerTenant, HttpContext.Request.Path, HttpContext.Request.QueryString);
+
+            if (Request.HasFormContentType)
+            {
+                foreach (var kv in Request.Form)
+                {
+                    // OJO: los valores pueden ser largos. Truncamos para no ensuciar el log.
+                    var val = string.Join(",", kv.Value);
+                    if (val.Length > 400) val = string.Concat(val.AsSpan(0, 400), "...");
+                    _logger.LogInformation("DBG Form: {Key} = {Val}", kv.Key, val);
+                }
+            }
+            else
+            {
+                // Si no fuera form, intentamos leer el body crudo (por si te cambian a JSON)
+                Request.EnableBuffering();
+                using var reader = new StreamReader(Request.Body, leaveOpen: true);
+                var raw = await reader.ReadToEndAsync();
+                Request.Body.Position = 0;
+                var show = raw?.Length > 800 ? string.Concat(raw.AsSpan(0, 800), "...") : raw;
+                _logger.LogInformation("DBG RawBody: {Raw}", show);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "DBG: error al volcar payload del webhook");
+        }
+
+
         try
         {
             //Inicializamos el payload vacío.

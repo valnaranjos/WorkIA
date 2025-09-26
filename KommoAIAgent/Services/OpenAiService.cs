@@ -3,10 +3,7 @@ using KommoAIAgent.Helpers;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI; 
 using OpenAI.Chat;
-using OpenAI.Realtime;
 using System.ClientModel;
-using System.Reflection;
-
 
 namespace KommoAIAgent.Services;
 
@@ -18,9 +15,12 @@ public class OpenAiService : IAiService
     private readonly OpenAIClient _client;
     private readonly ILogger<OpenAiService> _logger;
     private readonly ITenantContext _tenant;
+    private readonly ITokenBudget _budget;
 
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
-    public OpenAiService(ITenantContext tenant, ILogger<OpenAiService> logger)
+    public OpenAiService(ITenantContext tenant, 
+        ILogger<OpenAiService> logger,
+        ITokenBudget budget)
     {
         _logger = logger;
         _tenant = tenant;
@@ -34,7 +34,7 @@ public class OpenAiService : IAiService
 
         // Creamos el cliente oficial de OpenAI.
         _client = new OpenAIClient(apiKey);
-        
+        _budget = budget;
     }
 
     /// <summary>
@@ -240,26 +240,49 @@ public class OpenAiService : IAiService
     /// <param name="maxTokens"></param>
     /// <param name="model"></param>
     /// <returns></returns>
-    public async Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null)
+    public async Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null, CancellationToken ct = default)
     {
-        try
-        {
-            var mdl = model ?? _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
-            var chatClient = _client.GetChatClient(mdl);
-            var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTokens };
+        // 1) Estimación previa menos conservadora
+        var factor = _tenant.Config.Budgets?.EstimationFactor ?? 0.85;
+        var estimate = (int)Math.Ceiling((maxTokens > 0 ? maxTokens : 400) * factor);
 
-            var completion = await CallWithRetryAsync(
-                () => chatClient.CompleteChatAsync(messages, options),
-                _logger
-            );
-
-            return completion.Content?.FirstOrDefault()?.Text ?? "";
-        }
-        catch (Exception ex)
+        // 2) ¿El tenat tiene presupuesto?
+        if (!await _budget.CanConsumeAsync(_tenant, estimate, ct))
         {
-            _logger.LogError(ex, "Error en CompleteAsync");
-            return "";
+            var limit = _tenant.Config.Budgets?.TokenLimit ?? 0;
+            var used = await _budget.GetUsedTodayAsync(_tenant, ct);
+            var msg = _tenant.Config.Budgets?.ExceededMessage
+                        ?? "Hemos alcanzado el presupuesto del periodo. Intenta de nuevo más tarde.";
+
+            _logger.LogWarning("Budget exceeded: tenant={Tenant} used={Used} limit={Limit}",
+                _tenant.CurrentTenantId.Value, used, limit);
+
+            return msg;
         }
+
+        // 3) Llamada real al modelo
+        var modelToUse = model ?? _tenant.Config.OpenAI.Model;
+
+             var chat = _client.GetChatClient(modelToUse);
+
+        var result = await chat.CompleteChatAsync(
+            messages.ToList(),
+            new ChatCompletionOptions
+            {
+                MaxOutputTokenCount = maxTokens
+            },
+            ct
+        );
+
+        var text = result.Value.Content?.FirstOrDefault()?.Text ?? string.Empty;
+
+        // 4) Registrar consumo real
+        var usage = result.Value.Usage;
+        var usedTokens = (usage?.InputTokenCount ?? 0) + (usage?.OutputTokenCount ?? 0);
+        if (usedTokens == 0) usedTokens = estimate;
+
+
+        return text; 
+       
     }
-
 }

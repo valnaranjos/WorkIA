@@ -1,4 +1,5 @@
-﻿using KommoAIAgent.Helpers;
+﻿using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Helpers;
 using KommoAIAgent.Models;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
@@ -19,13 +20,21 @@ namespace KommoAIAgent.Services
         private readonly IChatMemoryStore _conv;
         private readonly IMessageBuffer _msgBuffer;
         private readonly LastImageCache _lastImage;
+        private readonly ITenantContext _tenant;
+        private readonly IRateLimiter _limiter;
 
         public WebhookHandler(
             IKommoApiService kommoService,
             IAiService aiService,
             ILogger<WebhookHandler> logger,
-            IConfiguration configuration, IMemoryCache cache,
-            IChatMemoryStore conv, IMessageBuffer msgBuffer, LastImageCache lastImage)
+            IConfiguration configuration, 
+            IMemoryCache cache,
+            IChatMemoryStore conv, 
+            IMessageBuffer msgBuffer, 
+            LastImageCache lastImage, 
+            ITenantContext tenant,
+            IRateLimiter limiter
+            )
         {
             _kommoService = kommoService;
             _aiService = aiService;
@@ -35,6 +44,8 @@ namespace KommoAIAgent.Services
             _conv = conv;
             _msgBuffer = msgBuffer;
             _lastImage = lastImage;
+            _tenant = tenant;
+            _limiter = limiter;
         }
 
         /// <summary>
@@ -107,19 +118,28 @@ namespace KommoAIAgent.Services
         /// <param name="userText"></param>
         /// <param name="attachments"></param>
         /// <returns></returns>
-        private async Task ProcessAggregatedTurnAsync(long leadId, string userText, List<AttachmentInfo> attachments)
+        private async Task ProcessAggregatedTurnAsync(long leadId, string userText, List<AttachmentInfo> attachments, CancellationToken ct = default)
         {
             _logger.LogInformation("Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
                 leadId, userText, attachments?.Count ?? 0);
 
             try
             {
+                // Limitar bursts por tenant/lead (lee Budgets.BurstPerMinute)
+                var tenantSlug = _tenant.CurrentTenantId.Value;
+                if (!await _limiter.TryConsumeAsync(tenantSlug, leadId, ct))
+                {
+                    _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);
+                    // (Opcional) Registrar un mensaje de cortesía en Kommo o simplemente salir.
+                    // await _kommoService.UpdateLeadMensajeIAAsync(leadId, "Estamos recibiendo muchos mensajes, en breve te respondemos.", ct);
+                    return; // detenemos el procesamiento para no llamar a OpenAI.
+                }
+
                 // Construir el historial de mensajes para enviar a la IA
-                var messages = ChatComposer.BuildHistoryMessages(
-                    _conv,
-                    leadId,
+                var messages = await ChatComposer.BuildHistoryMessagesAsync(
+                    _conv, _tenant, leadId,
                     "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho.",
-                    historyTurns: 10
+                    historyTurns: 10, ct
                 );
 
                 string aiResponse;
@@ -136,15 +156,16 @@ namespace KommoAIAgent.Services
 
                     // Guardar en caché la última imagen para este lead
                     _lastImage.SetLastImage(leadId, bytes, mime);
+
                     var prompt = string.IsNullOrWhiteSpace(userText)
                         ? "Describe la imagen y extrae cualquier texto visible."
                         : userText;
 
                     ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
-                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o");
+                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
 
-                    _conv.AppendUser(leadId, $"{prompt} [imagen]");
-                    _conv.AppendAssistant(leadId, aiResponse);
+                    await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                    await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
                 }
                 else
                 {
@@ -152,21 +173,25 @@ namespace KommoAIAgent.Services
                     {
                         // Reusa la imagen reciente ⇒ el modelo sí “ve” la misma foto de la pregunta anterior
                         ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
-                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o");
+                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
                     else
                     {
                         ChatComposer.AppendUserText(messages, userText);
-                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400);
+                        aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400, model: null, ct);
                     }
 
-                    _conv.AppendUser(leadId, userText);
-                    _conv.AppendAssistant(leadId, aiResponse);
+                    await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                    await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
+
                 }
 
                 // Actualizar el lead en Kommo con la respuesta de la IA
                 const int KOMMO_FIELD_MAX = 8000;
-                await _kommoService.UpdateLeadMensajeIAAsync(leadId, TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX));
+                await _kommoService.UpdateLeadMensajeIAAsync(
+                leadId,
+                TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
+                CancellationToken.None);
             }
             catch (Exception ex)
             {

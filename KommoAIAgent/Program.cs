@@ -2,6 +2,7 @@ using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Helpers;
 using KommoAIAgent.Infraestructure.Tenancy;
+using KommoAIAgent.Infrastructure.Tenancy;
 using KommoAIAgent.Services;
 using KommoAIAgent.Services.Interfaces;
 
@@ -37,9 +38,6 @@ builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 // Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>();
 
-//Servicio de almacén de memoria de conversaciones.
-builder.Services.AddSingleton<IChatMemoryStore, InMemoryChatMemoryStore>();
-
 // Soporte para caché en memoria, datos temporales e historial dentro de conversaciones.
 builder.Services.AddMemoryCache();
 
@@ -48,6 +46,15 @@ builder.Services.AddSingleton<IMessageBuffer, InMemoryMessageBuffer>();
 
 // Servicio para manejar la última imagen por chat.
 builder.Services.AddSingleton<LastImageCache>();
+
+// Servicio de memoria conversacional (Redis con fallback a local)
+builder.Services.AddSingleton<IChatMemoryStore, RedisChatMemoryStore>();
+
+// Rate limiter por tenant (in-memory)
+builder.Services.AddSingleton<IRateLimiter, InMemoryRateLimiter>();
+
+// Presupuesto de tokens por periodo (Daily/Monthly) en memoria por tenant.
+builder.Services.AddSingleton<ITokenBudget,InMemoryPeriodicTokenBudget>();
 
 var app = builder.Build();
 
