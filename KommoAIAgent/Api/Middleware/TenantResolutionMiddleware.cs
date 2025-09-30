@@ -25,11 +25,14 @@ namespace KommoAIAgent.Api.Middleware
         public async Task InvokeAsync(HttpContext http)
         {
             var id = _resolver.Resolve(http);
-            TenantConfig cfg;
-            if (string.IsNullOrEmpty(id.Value)) cfg = _cfgProvider.GetDefault();
-            else if (!_cfgProvider.TryGet(id, out cfg)) cfg = _cfgProvider.GetDefault();
 
-            // Establecemos el contexto del tenant para esta petición.
+            if (!_cfgProvider.TryGet(id, out var cfg))
+            {
+                http.Response.StatusCode = StatusCodes.Status404NotFound;
+                await http.Response.WriteAsJsonAsync(new { error = "Tenant desconocido" });
+                return;
+            }
+
             _ctx.SetCurrent(TenantId.From(cfg.Slug), cfg);
             await _next(http);
         }

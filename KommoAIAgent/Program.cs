@@ -16,7 +16,7 @@ builder.Services.Configure<MultiTenancyOptions>(
     builder.Configuration.GetSection("MultiTenancy"));
 
 builder.Services.AddSingleton<ITenantResolver, TenantResolver>();
-builder.Services.AddSingleton<ITenantConfigProvider, JsonTenantConfigProvider>();
+builder.Services.AddSingleton<ITenantConfigProvider, DbTenantConfigProvider>();
 builder.Services.AddSingleton<ITenantContextAccessor, TenantContextAccessor>();
 builder.Services.AddScoped<ITenantContext>(sp =>
     sp.GetRequiredService<ITenantContextAccessor>().Current);
@@ -26,12 +26,19 @@ builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 
 //Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría
 builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
-{
+{   
     var conn = builder.Configuration.GetConnectionString("Postgres");
     opts.UseNpgsql(conn);
     opts.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
     //Ajuste de compatibilidad de timestamps si te hace falta
     AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+});
+
+// Fábrica para usar contextos efímeros desde el provider
+builder.Services.AddPooledDbContextFactory<AppDbContext>(opts =>
+{
+    var conn = builder.Configuration.GetConnectionString("Postgres");
+    opts.UseNpgsql(conn);
 });
 // -------------------- Servicios App --------------------
 builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant

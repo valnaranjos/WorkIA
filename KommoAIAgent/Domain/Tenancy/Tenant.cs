@@ -14,6 +14,9 @@ public class Tenant
 
     // Kommo
     public string KommoBaseUrl { get; set; } = null!; // https://{sub}.kommo.com
+    public string? KommoAccessToken { get; set; }
+    public long? KommoMensajeIaFieldId { get; set; }
+    public string? KommoScopeId { get; set; }
 
     // IA
     public string IaProvider { get; set; } = "OpenAI";    // enum-string simple para no crear otra tabla

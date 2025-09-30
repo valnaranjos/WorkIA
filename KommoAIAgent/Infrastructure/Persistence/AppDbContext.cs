@@ -14,11 +14,17 @@ namespace KommoAIAgent.Infrastructure.Persistence
     {
         private readonly ITenantContext _tenantContext;
 
+        [ActivatorUtilitiesConstructor]
         public AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext tenantContext)
             : base(options)
         {
             _tenantContext = tenantContext;
         }
+
+        // Design-time (solo para migraciones)
+        public AppDbContext(DbContextOptions<AppDbContext> options)
+            : base(options) => _tenantContext = new NullTenantContext();
+
 
         // DbSets
         public DbSet<Tenant> Tenants => Set<Tenant>();
