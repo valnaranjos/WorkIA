@@ -3,6 +3,7 @@ using KommoAIAgent.Models;
 using KommoAIAgent.Services.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 
@@ -19,7 +20,9 @@ namespace KommoAIAgent.Services
         private readonly ITenantContext _tenant;
 
        
-        public KommoApiService(HttpClient httpClient, ILogger<KommoApiService> logger, ITenantContext tenant)
+        public KommoApiService(HttpClient httpClient,
+            ILogger<KommoApiService> logger, 
+            ITenantContext tenant)
         {
             _httpClient = httpClient;
             _logger = logger;
@@ -221,7 +224,56 @@ namespace KommoAIAgent.Services
             return (bytes, mime, name);
 
             //Kommo A VECES no envía Content-Type así que se infiere el MIME.
-        }      
+        }
+
+        private static async Task<HttpResponseMessage> WithRetryAsync(
+            Func<Task<HttpResponseMessage>> action,
+            ILogger logger,
+            string opDescription,
+            CancellationToken ct)
+        {
+            var delays = new[] { 250, 500, 1000 }; // ms
+            HttpResponseMessage? last = null;
+
+            for (int i = 0; i < delays.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                try
+                {
+                    last = await action();
+                    // Si es 2xx, OK
+                    if ((int)last.StatusCode >= 200 && (int)last.StatusCode < 300)
+                        return last;
+
+                    // Si es 429 o 5xx, reintentar (salvo último intento)
+                    if ((int)last.StatusCode == 429 || (int)last.StatusCode >= 500)
+                    {
+                        var retryAfter = last.Headers.RetryAfter?.Delta ?? TimeSpan.FromMilliseconds(delays[i]);
+                        logger.LogWarning("Kommo {Op} => {Status}. Reintentando en {Delay}ms...",
+                            opDescription, last.StatusCode, (int)retryAfter.TotalMilliseconds);
+
+                        await Task.Delay(retryAfter, ct);
+                        continue;
+                    }
+
+                    // Para 4xx distintos de 429, no sirve reintentar
+                    return last;
+                }
+                catch (Exception ex) when (i < delays.Length - 1)
+                {
+                    logger.LogWarning(ex, "Kommo {Op} falló (intento {Try}); reintentando en {Delay}ms...",
+                        opDescription, i + 1, delays[i]);
+                    await Task.Delay(delays[i], ct);
+                }
+            }
+
+            // Último intento (o nunca entró en el loop)
+            return last ?? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                ReasonPhrase = "Kommo retry budget exhausted"
+            };
+        }
 
     }
 }

@@ -2,9 +2,11 @@ using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Helpers;
 using KommoAIAgent.Infraestructure.Tenancy;
+using KommoAIAgent.Infrastructure.Persistence;
 using KommoAIAgent.Infrastructure.Tenancy;
 using KommoAIAgent.Services;
 using KommoAIAgent.Services.Interfaces;
+using Microsoft.EntityFrameworkCore;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,6 +24,20 @@ builder.Services.AddSwaggerGen();
 builder.Services.Configure<MultiTenancyOptions>(
     builder.Configuration.GetSection("MultiTenancy")
 );
+// Interceptor de auditoría para EF Core (registra CreatedAt/UpdatedAt automáticamente)
+builder.Services.AddScoped<AuditSaveChangesInterceptor>();
+
+//Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría
+builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
+{
+    var cs = builder.Configuration.GetConnectionString("AgenteIAKommo");
+    opts.UseNpgsql(cs);
+    opts.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+    Console.WriteLine(builder.Configuration.GetConnectionString("AgenteIAKommo"));
+});
+
+//Ajuste de compatibilidad de timestamps si te hace falta
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 // Proveedor de config por tenant, resolver de tenant y accessor del contexto
 builder.Services.AddSingleton<ITenantConfigProvider, JsonTenantConfigProvider>();

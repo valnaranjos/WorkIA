@@ -27,11 +27,11 @@ namespace KommoAIAgent.Services
             IKommoApiService kommoService,
             IAiService aiService,
             ILogger<WebhookHandler> logger,
-            IConfiguration configuration, 
+            IConfiguration configuration,
             IMemoryCache cache,
-            IChatMemoryStore conv, 
-            IMessageBuffer msgBuffer, 
-            LastImageCache lastImage, 
+            IChatMemoryStore conv,
+            IMessageBuffer msgBuffer,
+            LastImageCache lastImage,
             ITenantContext tenant,
             IRateLimiter limiter
             )
