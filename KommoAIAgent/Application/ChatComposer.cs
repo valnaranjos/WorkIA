@@ -2,7 +2,7 @@
 using KommoAIAgent.Services.Interfaces;
 using OpenAI.Chat;
 
-namespace KommoAIAgent.Helpers
+namespace KommoAIAgent.Application
 {
     /// <summary>
     /// Composición centralizada del prompt/historial para chat (texto e imágenes).

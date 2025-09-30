@@ -1,6 +1,7 @@
-﻿using Newtonsoft.Json;
+﻿using KommoAIAgent.Application.Common;
+using Newtonsoft.Json;
 
-namespace KommoAIAgent.Models
+namespace KommoAIAgent.Api.Contracts
 {
     public class KommoWebhookPayload
     {

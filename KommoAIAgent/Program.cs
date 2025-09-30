@@ -1,7 +1,7 @@
 using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Helpers;
 using KommoAIAgent.Infraestructure.Tenancy;
+using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Infrastructure.Persistence;
 using KommoAIAgent.Infrastructure.Tenancy;
 using KommoAIAgent.Services;
@@ -27,7 +27,7 @@ builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 //Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría
 builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 {
-    var conn = builder.Configuration.GetConnectionString("KommoAIDb");
+    var conn = builder.Configuration.GetConnectionString("Postgres");
     opts.UseNpgsql(conn);
     opts.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
     //Ajuste de compatibilidad de timestamps si te hace falta

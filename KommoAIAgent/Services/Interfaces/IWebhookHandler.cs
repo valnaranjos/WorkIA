@@ -1,4 +1,4 @@
-﻿using KommoAIAgent.Models;
+﻿using KommoAIAgent.Api.Contracts;
 
 namespace KommoAIAgent.Services.Interfaces
 {

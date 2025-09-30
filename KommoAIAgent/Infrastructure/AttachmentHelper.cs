@@ -1,6 +1,6 @@
-﻿namespace KommoAIAgent.Helpers
+﻿namespace KommoAIAgent.Infrastructure
 {
-    using KommoAIAgent.Models;
+    using KommoAIAgent.Application.Common;
 
     /// <summary>
     /// Helper para operaciones comunes con attachments.

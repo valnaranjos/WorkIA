@@ -1,4 +1,4 @@
-﻿namespace KommoAIAgent.Models
+﻿namespace KommoAIAgent.Application.Common
 {
     /// <summary>
     /// Modelo de datos para representar un archivo adjunto en un mensaje.

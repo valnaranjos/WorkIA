@@ -1,9 +1,9 @@
-﻿using KommoAIAgent.Models;
-using KommoAIAgent.Services.Interfaces;
+﻿using KommoAIAgent.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using KommoAIAgent.Helpers;
+using KommoAIAgent.Api.Contracts;
+using KommoAIAgent.Application.Common;
 
 namespace KommoAIAgent.Controllers;
 
@@ -89,7 +89,7 @@ public class KommoWebhookController : ControllerBase
                 }
 
                 // Extrae el mensaje
-                string? text = Utils.FirstNonEmpty(
+                string? text = MediaUtils.FirstNonEmpty(
                     form["message[add][0][text]"].ToString(),
                     form["text"].ToString(),
                     form["message[text]"].ToString()
@@ -99,16 +99,16 @@ public class KommoWebhookController : ControllerBase
                 // Crea el objeto MessageDetails con los campos.
                 var md = new MessageDetails
                 {
-                    MessageId = Utils.FirstNonEmpty(form["message[add][0][id]"].ToString()),
-                    Type = Utils.FirstNonEmpty(form["message[add][0][type]"].ToString()),
+                    MessageId = MediaUtils.FirstNonEmpty(form["message[add][0][id]"].ToString()),
+                    Type = MediaUtils.FirstNonEmpty(form["message[add][0][type]"].ToString()),
                     Text = text,
-                    ChatId = Utils.FirstNonEmpty(form["message[add][0][chat_id]"].ToString()),
-                    EntityType = Utils.FirstNonEmpty(form["message[add][0][entity_type]"].ToString()),
+                    ChatId = MediaUtils.FirstNonEmpty(form["message[add][0][chat_id]"].ToString()),
+                    EntityType = MediaUtils.FirstNonEmpty(form["message[add][0][entity_type]"].ToString()),
                     LeadId = leadId
                 };
 
                 // Singular
-                var attachLink = Utils.FirstNonEmpty(
+                var attachLink = MediaUtils.FirstNonEmpty(
                     form["message[add][0][attachment][link]"].ToString(),
                     form["message[add][0][attachment][url]"].ToString(),
                     form["message[add][0][attachment][download_link]"].ToString()
@@ -119,10 +119,10 @@ public class KommoWebhookController : ControllerBase
                     var att = new AttachmentInfo
                     {
                         Url = attachLink,
-                        Type = Utils.FirstNonEmpty(form["message[add][0][attachment][type]"].ToString()),
-                        Name = Utils.FirstNonEmpty(form["message[add][0][attachment][file_name]"].ToString(),
+                        Type = MediaUtils.FirstNonEmpty(form["message[add][0][attachment][type]"].ToString()),
+                        Name = MediaUtils.FirstNonEmpty(form["message[add][0][attachment][file_name]"].ToString(),
                                                  form["message[add][0][attachment][name]"].ToString()),
-                        MimeType = Utils.FirstNonEmpty(form["message[add][0][attachment][mime_type]"].ToString(),
+                        MimeType = MediaUtils.FirstNonEmpty(form["message[add][0][attachment][mime_type]"].ToString(),
                                                  form["message[add][0][attachment][content_type]"].ToString())
                     };
                     // si type parece MIME
@@ -133,7 +133,7 @@ public class KommoWebhookController : ControllerBase
 
                     md.Attachments.Add(att);
                     _logger.LogInformation("Adjunto (singular) encontrado: {Url} (type={Type}, mime={Mime})",
-                       Utils.MaskUrl(att.Url), att.Type, att.MimeType);
+                       MediaUtils.MaskUrl(att.Url), att.Type, att.MimeType);
                 }
 
                 //PLURAL: message[add][0][attachments][i][...]
@@ -141,7 +141,7 @@ public class KommoWebhookController : ControllerBase
                 {
                     md.Attachments.Add(att);
                     _logger.LogInformation("Adjunto (plural) encontrado: {Url} (type={Type}, mime={Mime})",
-                       Utils.MaskUrl(att.Url), att.Type, att.MimeType);
+                       MediaUtils.MaskUrl(att.Url), att.Type, att.MimeType);
                 }
 
                 payload.Message.AddedMessages.Add(md);
@@ -279,13 +279,13 @@ public class KommoWebhookController : ControllerBase
             {
                 var a = new AttachmentInfo
                 {
-                    Url = Utils.FirstNonEmpty(att.TryGetProperty("link", out var l) ? l.GetString() : null,
+                    Url = MediaUtils.FirstNonEmpty(att.TryGetProperty("link", out var l) ? l.GetString() : null,
                                              att.TryGetProperty("url", out var u) ? u.GetString() : null,
                                              att.TryGetProperty("download_link", out var d) ? d.GetString() : null),
                     Type = att.TryGetProperty("type", out var ty) ? ty.GetString() : null,
-                    Name = Utils.FirstNonEmpty(att.TryGetProperty("file_name", out var fn) ? fn.GetString() : null,
+                    Name = MediaUtils.FirstNonEmpty(att.TryGetProperty("file_name", out var fn) ? fn.GetString() : null,
                                              att.TryGetProperty("name", out var nm) ? nm.GetString() : null),
-                    MimeType = Utils.FirstNonEmpty(att.TryGetProperty("mime_type", out var mm) ? mm.GetString() : null,
+                    MimeType = MediaUtils.FirstNonEmpty(att.TryGetProperty("mime_type", out var mm) ? mm.GetString() : null,
                                              att.TryGetProperty("content_type", out var ct) ? ct.GetString() : null)
                 };
                 if (!string.IsNullOrWhiteSpace(a.Url)) md.Attachments.Add(a);

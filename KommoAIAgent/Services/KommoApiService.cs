@@ -1,5 +1,5 @@
-﻿using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Models;
+﻿using KommoAIAgent.Application;
+using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;

@@ -1,8 +1,9 @@
-﻿using KommoAIAgent.Models;
-
-namespace KommoAIAgent.Helpers
+﻿namespace KommoAIAgent.Application.Common
 {
-    public class Utils
+    /// <summary>
+    /// Helpers comunes para media (URLs, attachments, etc).
+    /// </summary>
+    public class MediaUtils
     {
         /// <summary>
         /// Devuelve la URL sin query ni fragmentos (oculta tokens/ids sensibles).
@@ -15,6 +16,11 @@ namespace KommoAIAgent.Helpers
             return uri.GetLeftPart(UriPartial.Path);
         }
 
+        /// <summary>
+        /// Si el attachment es una imagen (por mime, tipo o extensión), devuelve true.
+        /// </summary>
+        /// <param name="a"></param>
+        /// <returns></returns>
         public static bool IsImageAttachment(AttachmentInfo a)
         {
             if (!string.IsNullOrWhiteSpace(a.MimeType) &&
@@ -30,6 +36,13 @@ namespace KommoAIAgent.Helpers
                    s.EndsWith(".webp") || s.EndsWith(".gif") || s.EndsWith(".bmp") ||
                    s.EndsWith(".tif") || s.EndsWith(".tiff");
         }
+
+        /// <summary>
+        /// Si el parametro es nulo o vacío, devuelve el siguiente no vacío, o null si todos lo son.
+        /// Usado para mensajes de fallback.
+        /// </summary>
+        /// <param name="values"></param>
+        /// <returns></returns>
 
         public static string? FirstNonEmpty(params string?[] values)
         {

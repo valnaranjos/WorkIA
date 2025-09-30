@@ -1,7 +1,7 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using System;
 
-namespace KommoAIAgent.Helpers
+namespace KommoAIAgent.Infrastructure
 {
     /// <summary>
     /// Clase para almacenar en caché la última imagen enviada por un usuario.

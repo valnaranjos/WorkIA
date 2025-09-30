@@ -1,4 +1,4 @@
-﻿namespace KommoAIAgent.Helpers
+﻿namespace KommoAIAgent.Application.Common
 {
     /// <summary>
     /// Helper para operaciones comunes con texto.
@@ -13,7 +13,7 @@
         /// <param name="max"></param>
         /// <returns></returns>
         public static string Truncate(string s, int max) =>
-           string.IsNullOrEmpty(s) ? s : (s.Length <= max ? s : s[..max]);
+           string.IsNullOrEmpty(s) ? s : s.Length <= max ? s : s[..max];
 
 
         /// <summary>

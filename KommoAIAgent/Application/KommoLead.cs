@@ -1,4 +1,4 @@
-﻿namespace KommoAIAgent.Models
+﻿namespace KommoAIAgent.Application
 {
     public class KommoLead
     {

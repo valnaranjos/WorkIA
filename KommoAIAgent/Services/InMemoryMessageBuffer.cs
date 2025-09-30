@@ -1,5 +1,5 @@
-﻿using KommoAIAgent.Helpers;
-using KommoAIAgent.Models;
+﻿using KommoAIAgent.Application.Common;
+using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Services.Interfaces;
 using System.Collections.Concurrent;
 

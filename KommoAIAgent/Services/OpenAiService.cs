@@ -1,7 +1,7 @@
-﻿using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Helpers;
+﻿using KommoAIAgent.Application.Common;
+using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
-using OpenAI; 
+using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
 
@@ -88,7 +88,7 @@ public class OpenAiService : IAiService
         var maxTok = 400;
 
         _logger.LogInformation("↗️ OpenAI.Vision-URL (tenant={Tenant}, model={Model}, url={Url})",
-            _tenant.CurrentTenantId, model, Utils.MaskUrl(imageUrl));
+            _tenant.CurrentTenantId, model, MediaUtils.MaskUrl(imageUrl));
 
         try
         {

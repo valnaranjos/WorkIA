@@ -20,8 +20,12 @@ namespace KommoAIAgent.Infrastructure.Persistence
             _tenantContext = tenantContext;
         }
 
+        // DbSets
+        public DbSet<Tenant> Tenants => Set<Tenant>();
         public DbSet<IaLog> IaLogs => Set<IaLog>();
         public DbSet<IaMetric> IaMetrics => Set<IaMetric>();
+
+
         protected override void OnModelCreating(ModelBuilder b)
         {
             // Converter: TenantId (VO con slug) <-> string en Postgres
@@ -29,6 +33,45 @@ namespace KommoAIAgent.Infrastructure.Persistence
                 toProvider => toProvider.Value,
                 fromProvider => TenantId.From(fromProvider)
             );
+
+            // === Tenant ===
+            // Catálogo de tenants y su configuración.
+            b.Entity<Tenant>(e =>
+            {
+                e.ToTable("tenants");
+                e.HasKey(x => x.Id);
+
+                // Identidad y ruteo
+                e.Property(x => x.Slug).IsRequired().HasMaxLength(100);
+                e.HasIndex(x => x.Slug).IsUnique();
+                e.Property(x => x.DisplayName).IsRequired().HasMaxLength(200);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+
+                // Kommo
+                e.Property(x => x.KommoBaseUrl).IsRequired().HasMaxLength(200);
+
+                // IA
+                e.Property(x => x.IaProvider).IsRequired().HasMaxLength(30);
+                e.Property(x => x.IaModel).IsRequired().HasMaxLength(120);
+                e.Property(x => x.Temperature);
+                e.Property(x => x.TopP);
+                e.Property(x => x.MaxTokens);
+
+                // Budget & guardrails
+                e.Property(x => x.MonthlyTokenBudget).HasDefaultValue(5_000_000);
+                e.Property(x => x.AlertThresholdPct).HasDefaultValue(75);
+
+                // Runtime defaults
+                e.Property(x => x.MemoryTTLMinutes).HasDefaultValue(120);
+                e.Property(x => x.ImageCacheTTLMinutes).HasDefaultValue(3);
+                e.Property(x => x.DebounceMs).HasDefaultValue(700);
+                e.Property(x => x.RatePerMinute).HasDefaultValue(15);
+                e.Property(x => x.RatePer5Minutes).HasDefaultValue(60);
+
+                // Auditoría
+                e.Property(x => x.CreatedAt).IsRequired();
+                e.Property(x => x.UpdatedAt);
+            });
 
             // === IaLog ===
             b.Entity<IaLog>(e =>

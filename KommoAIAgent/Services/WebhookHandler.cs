@@ -1,6 +1,8 @@
-﻿using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Helpers;
-using KommoAIAgent.Models;
+﻿using KommoAIAgent.Api.Contracts;
+using KommoAIAgent.Application;
+using KommoAIAgent.Application.Common;
+using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using OpenAI.Chat;
