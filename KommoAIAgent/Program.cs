@@ -11,81 +11,72 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
-//Configuración de Servicios- Contenedor de Inyección de Dependencias ---
-
-// Añade los servicios básicos para una API web y para la documentación con Swagger.
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-// -------------------- MultiTenancy: opciones + servicios --------------------
-// Vincula "MultiTenancy" del appsettings.json -> MultiTenancyOptions (usado por JsonTenantConfigProvider)
+// -------------------- MultiTenancy --------------------
 builder.Services.Configure<MultiTenancyOptions>(
-    builder.Configuration.GetSection("MultiTenancy")
-);
-// Interceptor de auditoría para EF Core (registra CreatedAt/UpdatedAt automáticamente)
+    builder.Configuration.GetSection("MultiTenancy"));
+
+builder.Services.AddSingleton<ITenantResolver, TenantResolver>();
+builder.Services.AddSingleton<ITenantConfigProvider, JsonTenantConfigProvider>();
+builder.Services.AddSingleton<ITenantContextAccessor, TenantContextAccessor>();
+builder.Services.AddScoped<ITenantContext>(sp =>
+    sp.GetRequiredService<ITenantContextAccessor>().Current);
+
+// -------------------- EF Core / PostgreSQL --------------------
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 
 //Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría
 builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 {
-    var cs = builder.Configuration.GetConnectionString("AgenteIAKommo");
-    opts.UseNpgsql(cs);
+    var conn = builder.Configuration.GetConnectionString("KommoAIDb");
+    opts.UseNpgsql(conn);
     opts.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
-    Console.WriteLine(builder.Configuration.GetConnectionString("AgenteIAKommo"));
+    //Ajuste de compatibilidad de timestamps si te hace falta
+    AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 });
-
-//Ajuste de compatibilidad de timestamps si te hace falta
-AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
-
-// Proveedor de config por tenant, resolver de tenant y accessor del contexto
-builder.Services.AddSingleton<ITenantConfigProvider, JsonTenantConfigProvider>();
-builder.Services.AddSingleton<ITenantResolver, TenantResolver>();
-builder.Services.AddSingleton<ITenantContextAccessor, TenantContextAccessor>();
-builder.Services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<ITenantContextAccessor>().Current);
-
-// -------------------- IA y Webhook --------------------
-builder.Services.AddScoped<IAiService, OpenAiService>();   // OpenAiService ya adaptado a multi-tenant (lazy)
+// -------------------- Servicios App --------------------
+builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 
-
-// -------------------- Kommo HTTP Client (typed) por tenant --------------------
 // Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>();
 
+
 // Soporte para caché en memoria, datos temporales e historial dentro de conversaciones.
 builder.Services.AddMemoryCache();
-
 // Buffer de mensajes en memoria para la ventana de envío de mensajes.
 builder.Services.AddSingleton<IMessageBuffer, InMemoryMessageBuffer>();
-
 // Servicio para manejar la última imagen por chat.
 builder.Services.AddSingleton<LastImageCache>();
-
 // Servicio de memoria conversacional (Redis con fallback a local)
 builder.Services.AddSingleton<IChatMemoryStore, RedisChatMemoryStore>();
-
 // Rate limiter por tenant (in-memory)
 builder.Services.AddSingleton<IRateLimiter, InMemoryRateLimiter>();
 
 // Presupuesto de tokens por periodo (Daily/Monthly) en memoria por tenant.
-builder.Services.AddSingleton<ITokenBudget,InMemoryPeriodicTokenBudget>();
+builder.Services.AddSingleton<ITokenBudget, InMemoryPeriodicTokenBudget>();
+
+
+
+//API Básica
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
 
-// HTTP request pipeline.
+// -------------------- Middleware --------------------
+app.UseMiddleware<TenantResolutionMiddleware>();
 
-// Habilitamos Swagger solo para DESARROLLO. 
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-//Middleware 
-app.UseMiddleware<TenantResolutionMiddleware>();
+
+
+// -------------------- Endpoints --------------------
 
 // Punto de entrada para verificar health check de la IA.
 app.MapGet("/health/ai", async (IAiService ai) =>

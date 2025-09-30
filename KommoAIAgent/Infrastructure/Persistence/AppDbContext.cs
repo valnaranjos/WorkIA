@@ -1,4 +1,5 @@
-﻿using KommoAIAgent.Domain.Ia;
+﻿using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Domain.Ia;
 using KommoAIAgent.Domain.Tenancy;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
@@ -11,14 +12,19 @@ namespace KommoAIAgent.Infrastructure.Persistence
     /// </summary>
     public sealed class AppDbContext : DbContext
     {
-        public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+        private readonly ITenantContext _tenantContext;
+
+        public AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext tenantContext)
+            : base(options)
+        {
+            _tenantContext = tenantContext;
+        }
 
         public DbSet<IaLog> IaLogs => Set<IaLog>();
         public DbSet<IaMetric> IaMetrics => Set<IaMetric>();
-
         protected override void OnModelCreating(ModelBuilder b)
         {
-            // Converter VO <-> string (slug normalizado)
+            // Converter: TenantId (VO con slug) <-> string en Postgres
             var tenantIdConverter = new ValueConverter<TenantId, string>(
                 toProvider => toProvider.Value,
                 fromProvider => TenantId.From(fromProvider)
@@ -32,14 +38,16 @@ namespace KommoAIAgent.Infrastructure.Persistence
 
                 e.Property(x => x.TenantId)
                  .HasConversion(tenantIdConverter)
-                 .HasMaxLength(100)   // slug corto: index eficiente
+                 .HasMaxLength(100)
                  .IsRequired();
 
                 e.HasIndex(x => x.TenantId);
+
                 e.Property(x => x.Model).IsRequired().HasMaxLength(120);
                 e.Property(x => x.Input).IsRequired();
                 e.Property(x => x.Output).IsRequired();
                 e.Property(x => x.Meta);
+
                 e.Property(x => x.CreatedAt).IsRequired();
                 e.Property(x => x.UpdatedAt);
             });
@@ -56,13 +64,24 @@ namespace KommoAIAgent.Infrastructure.Persistence
                  .IsRequired();
 
                 e.HasIndex(x => x.TenantId);
+
                 e.Property(x => x.Model).IsRequired().HasMaxLength(120);
                 e.Property(x => x.PromptTokens).IsRequired();
                 e.Property(x => x.CompletionTokens).IsRequired();
                 e.Property(x => x.At).IsRequired();
+
                 e.Property(x => x.CreatedAt).IsRequired();
                 e.Property(x => x.UpdatedAt);
             });
+
+            // === Filtro global multi-tenant ===
+            // Solo aplica si hay tenant resuelto (slug no vacío); evita interferir en migraciones/boot.
+            var currentSlug = _tenantContext.CurrentTenantId.Value;
+            if (!string.IsNullOrWhiteSpace(currentSlug))
+            {
+                b.Entity<IaLog>().HasQueryFilter(x => x.TenantId.Value == currentSlug);
+                b.Entity<IaMetric>().HasQueryFilter(x => x.TenantId.Value == currentSlug);
+            }
 
             base.OnModelCreating(b);
         }
