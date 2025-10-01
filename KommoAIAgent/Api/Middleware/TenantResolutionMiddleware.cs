@@ -24,6 +24,14 @@ namespace KommoAIAgent.Api.Middleware
         /// <returns></returns>
         public async Task InvokeAsync(HttpContext http)
         {
+            //Solo para poder usar Swagger en dev sin tenant
+            if (http.Request.Path.StartsWithSegments("/swagger") ||
+            http.Request.Path.StartsWithSegments("/health") || http.Request.Path.StartsWithSegments("/admin"))
+            {
+                await _next(http);
+                return;
+            }
+
             var id = _resolver.Resolve(http);
 
             if (!_cfgProvider.TryGet(id, out var cfg))

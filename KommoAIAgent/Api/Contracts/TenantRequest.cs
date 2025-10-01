@@ -10,7 +10,9 @@
       float? TopP,
       int? MaxTokens,
       int? MonthlyTokenBudget,
-      int? AlertThresholdPct
+      int? AlertThresholdPct,
+      int? RatePer5Minutes,
+    int? ImageCacheTTLMinutes
   );
 
     public sealed record TenantResponse(

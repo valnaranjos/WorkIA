@@ -1,5 +1,6 @@
 ﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Domain.Tenancy;
+using Microsoft.Extensions.Primitives;
 using System.Text.RegularExpressions;
 
 namespace KommoAIAgent.Infraestructure.Tenancy
@@ -15,6 +16,16 @@ namespace KommoAIAgent.Infraestructure.Tenancy
         
         public TenantId Resolve(HttpContext http)
         {
+            //Para pruebas en Swagger u otras herramientas, se puede forzar el tenant por:
+            // a) Header (útil desde Swagger UI)
+            if (http.Request.Headers.TryGetValue("X-Tenant-Slug", out var h) && !StringValues.IsNullOrEmpty(h))
+                return TenantId.From(h.ToString());
+
+            // b) Querystring ?tenant=slug
+            if (http.Request.Query.TryGetValue("tenant", out var q) && !StringValues.IsNullOrEmpty(q))
+                return TenantId.From(q.ToString());
+
+
             // 1) Ruta /t/{slug}
             var path = http.Request.Path.Value ?? string.Empty;
             var m = RouteSlug.Match(path);

@@ -34,12 +34,8 @@ builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
     AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 });
 
-// Fábrica para usar contextos efímeros desde el provider
-builder.Services.AddPooledDbContextFactory<AppDbContext>(opts =>
-{
-    var conn = builder.Configuration.GetConnectionString("Postgres");
-    opts.UseNpgsql(conn);
-});
+
+
 // -------------------- Servicios App --------------------
 builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();

@@ -10,24 +10,26 @@ namespace KommoAIAgent.Infraestructure.Tenancy
     /// </summary>
     public sealed class DbTenantConfigProvider : ITenantConfigProvider
     {
-        private readonly IDbContextFactory<AppDbContext> _dbFactory;
+        private readonly IServiceScopeFactory _scopeFactory;
 
-        public DbTenantConfigProvider(IDbContextFactory<AppDbContext> dbFactory)
+       public DbTenantConfigProvider(IServiceScopeFactory scopeFactory)
         {
-            _dbFactory = dbFactory;
+            _scopeFactory = scopeFactory;
         }
 
         public TenantConfig Get(TenantId id)
         {
-            using var db = _dbFactory.CreateDbContext();
-            var t = db.Tenants.AsNoTracking().FirstOrDefault(x => x.Slug == id.Value && x.IsActive);
-            if (t is null) throw new KeyNotFoundException($"Tenant '{id.Value}' not found");
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var t = db.Tenants.AsNoTracking()
+                  .FirstOrDefault(x => x.Slug == id.Value && x.IsActive)
+                 ?? throw new KeyNotFoundException($"Tenant '{id.Value}' no se encontró");
+
             return Map(t);
         }
 
         public bool TryGet(TenantId id, out TenantConfig config)
         {
-            using var db = _dbFactory.CreateDbContext();
 
             //Si el slug es nulo o vacío, no tiene sentido buscar en la BD.
             if (string.IsNullOrWhiteSpace(id.Value))
@@ -36,7 +38,12 @@ namespace KommoAIAgent.Infraestructure.Tenancy
                 return false;
             }
 
-            var t = db.Tenants.AsNoTracking().FirstOrDefault(x => x.Slug == id.Value && x.IsActive);
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var t = db.Tenants.AsNoTracking()
+                     .FirstOrDefault(x => x.Slug == id.Value && x.IsActive);
+
             if (t is null)
             {
                 config = default!;
@@ -49,9 +56,12 @@ namespace KommoAIAgent.Infraestructure.Tenancy
 
         public TenantConfig GetDefault()
         {
-            using var db = _dbFactory.CreateDbContext();
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
             var t = db.Tenants.AsNoTracking().FirstOrDefault(x => x.IsActive)
-                ?? throw new InvalidOperationException("No hay tenants activos en la base.");
+                    ?? throw new InvalidOperationException("No hay tenants activos.");
+
             return Map(t);
         }
 
@@ -62,6 +72,7 @@ namespace KommoAIAgent.Infraestructure.Tenancy
             {
                 Slug = t.Slug,
                 DisplayName = t.DisplayName,
+
                 Kommo = new KommoConfig
                 {
                     BaseUrl = t.KommoBaseUrl,
@@ -90,7 +101,9 @@ namespace KommoAIAgent.Infraestructure.Tenancy
                     TokenLimit = t.MonthlyTokenBudget > 0 ? t.MonthlyTokenBudget : 5_000_000,
                     EstimationFactor = 0.85,
                     ExceededMessage = null,
-                    BurstPerMinute = t.RatePerMinute > 0 ? t.RatePerMinute : 12
+                    BurstPerMinute = t.RatePerMinute > 0 ? t.RatePerMinute : 12,
+                     AlertThresholdPct = t.AlertThresholdPct > 0 ? t.AlertThresholdPct : 75,
+                    BurstPer5Minutes = t.RatePer5Minutes > 0 ? t.RatePer5Minutes : 60
                 },
 
                 // --- Memoria (default estándar) ---
@@ -101,7 +114,8 @@ namespace KommoAIAgent.Infraestructure.Tenancy
                     {
                         ConnectionString = Environment.GetEnvironmentVariable("REDIS__CS") ?? string.Empty,
                         Prefix = "kommoai"
-                    }
+                    },
+                    ImageCacheTTLMinutes = t.ImageCacheTTLMinutes > 0 ? t.ImageCacheTTLMinutes : 3
                 }
             };
         }

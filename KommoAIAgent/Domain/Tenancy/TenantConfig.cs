@@ -89,6 +89,8 @@
 
         // 🔙 Límite de ráfagas por minuto (0 = sin límite)
         public int BurstPerMinute { get; init; } = 12;
+        public int AlertThresholdPct { get; set; } = 75;
+        public int BurstPer5Minutes { get; set; } = 60;
     }
 
     /// <summary>
@@ -101,6 +103,8 @@
 
         // Configuración de Redis (si no hay ConnectionString, se usa InMemory fallback)
         public RedisConfig Redis { get; init; } = new();
+
+        public int ImageCacheTTLMinutes { get; set; } = 3;
     }
 
     /// <summary>
