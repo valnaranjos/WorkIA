@@ -29,8 +29,7 @@ public class KommoWebhookController : ControllerBase
     public async Task<IActionResult> HandleIncomingMessage()
     {
         _logger.LogInformation("--- Webhook de Kommo (form-urlencoded) recibido ---");
-
-        // DEBUG: volcado temporal de todo lo que llega en form-urlencoded
+               
         try
         {
             var headerTenant = HttpContext.Request.Headers["X-Tenant-Slug"].ToString();

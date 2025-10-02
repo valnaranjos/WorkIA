@@ -16,25 +16,26 @@ public class OpenAiService : IAiService
     private readonly ILogger<OpenAiService> _logger;
     private readonly ITenantContext _tenant;
     private readonly ITokenBudget _budget;
+    private readonly IAiCredentialProvider _keys;
 
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
     public OpenAiService(ITenantContext tenant, 
         ILogger<OpenAiService> logger,
-        ITokenBudget budget)
+        ITokenBudget budget,
+        IAiCredentialProvider keys)
     {
         _logger = logger;
         _tenant = tenant;
+        _keys = keys;
 
-        var apiKey = _tenant.Config.OpenAI.ApiKey;
-        if (string.IsNullOrEmpty(apiKey))
-        {
+        var apiKey = _keys.GetApiKey(_tenant.Config);
+        if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{_tenant.CurrentTenantId}'");
-
-        }
 
         // Creamos el cliente oficial de OpenAI.
         _client = new OpenAIClient(apiKey);
         _budget = budget;
+        _keys = keys;
     }
 
     /// <summary>

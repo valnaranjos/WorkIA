@@ -35,8 +35,10 @@ builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 });
 
 
-
 // -------------------- Servicios App --------------------
+
+//Servicio de configuración de proveedor de IA y su apiKey tanto por tenat como estándar.
+builder.Services.AddSingleton<IAiCredentialProvider, AiCredentialProvider>();
 builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 
@@ -76,7 +78,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
 
 
 // -------------------- Endpoints --------------------

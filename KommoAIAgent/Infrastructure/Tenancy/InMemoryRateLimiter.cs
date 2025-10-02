@@ -1,9 +1,10 @@
 ﻿using KommoAIAgent.Domain.Tenancy;
+using KommoAIAgent.Infraestructure.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
-namespace KommoAIAgent.Infraestructure.Tenancy
+namespace KommoAIAgent.Infrastructure.Tenancy
 {
     /// <summary>
     /// Rate limiter simple en memoria: N turnos por minuto por tenant (y lead).
