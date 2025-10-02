@@ -32,15 +32,35 @@ namespace KommoAIAgent.Services
         /// <summary>
         /// Construye un HttpRequestMessage con URL absoluta + Authorization por tenant.
         /// </summary>
-        private HttpRequestMessage BuildRequest(HttpMethod method, string relativePath, HttpContent? content = null)
+        private HttpRequestMessage BuildRequest(HttpMethod method, string relativeOrAbsoluteUrl, HttpContent? content = null)
         {
-            // BaseUrl del tenant actual
-            var baseUrl = _tenant.Config.Kommo.BaseUrl.TrimEnd('/');
-            var url = new Uri(new Uri(baseUrl + "/"), relativePath.TrimStart('/'));
+            // Permite url absoluta (https://sub.amocrm.com/...) o relativa (/api/v4/leads/...)
+            string url;
+            if (relativeOrAbsoluteUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            {
+                url = relativeOrAbsoluteUrl;
+            }
+            else
+            {
+                var baseUrl = _tenant.Config.Kommo.BaseUrl?.TrimEnd('/')
+                              ?? throw new InvalidOperationException($"Kommo BaseUrl vacío para tenant={_tenant.CurrentTenantId}");
+                url = $"{baseUrl}/{relativeOrAbsoluteUrl.TrimStart('/')}";
+            }
 
-            var req = new HttpRequestMessage(method, url);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tenant.Config.Kommo.AccessToken);
+            var token = _tenant.Config.Kommo.AccessToken;
+            if (string.IsNullOrWhiteSpace(token))
+                throw new InvalidOperationException($"Kommo AccessToken vacío para tenant={_tenant.CurrentTenantId}");
+
+            // Fuerza HTTP/1.1 para evitar coalescing/mezcla entre subdominios por limitaciones Kommo
+            var req = new HttpRequestMessage(method, url) { Version = HttpVersion.Version11 };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             if (content != null) req.Content = content;
+
+            // Log de diagnóstico (host + cola de token)
+            var tail = token.Length >= 6 ? token[^6..] : token;
+            _logger.LogInformation("Kommo → {Method} {Url} (tenant={Tenant}, token=***{Tail})",
+                method, url, _tenant.CurrentTenantId, tail);
+
             return req;
         }
 
@@ -72,30 +92,69 @@ namespace KommoAIAgent.Services
         }
             };
 
-            var json = JsonConvert.SerializeObject(payload);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            // PATCH unitario
-            var path = $"/api/v4/leads/{leadId}";
-            using var req = BuildRequest(HttpMethod.Patch, path, content);
+
+            var json = JsonConvert.SerializeObject(payload);
+
+            // Helper local para crear SIEMPRE una nueva request + content (necesario para retry)
+            HttpRequestMessage CreatePatchRequest()
+            {
+                var path = $"/api/v4/leads/{leadId}";
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var req = BuildRequest(HttpMethod.Patch, path, content);
+                req.Version = HttpVersion.Version11; // fuerza HTTP/1.1 por request para que no haya coalescing por los tokens de Kommo por la rápida alternancia entre requests.
+                return req;
+            }
 
             _logger.LogInformation("PATCH (unitario) lead {LeadId} field {FieldId} (tenant={Tenant})",
                 leadId, fieldId, _tenant.CurrentTenantId);
 
-            using var res = await _httpClient.SendAsync(req);
-            var body = await res.Content.ReadAsStringAsync();
-
-            if (!res.IsSuccessStatusCode)
+            // -------- Primer intento --------
+            using (var req1 = CreatePatchRequest())
+            using (var res1 = await _httpClient.SendAsync(req1))
             {
-                _logger.LogError("PATCH unitario error {Status} (lead={LeadId}, field={FieldId}) → {Body}",
-                    (int)res.StatusCode, leadId, fieldId, body);
-                return;
+                var body1 = await res1.Content.ReadAsStringAsync();
+
+                if (res1.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("PATCH unitario OK (lead={LeadId}, field={FieldId}) → {Body}",
+                        leadId, fieldId, body1);
+                }
+                else if (res1.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // -------- Retry breve solo si 401 --------
+                    _logger.LogWarning("PATCH 401 (lead={LeadId}, field={FieldId}, tenant={Tenant}) → retry breve",
+                        leadId, fieldId, _tenant.CurrentTenantId);
+
+                    await Task.Delay(150); // pequeña espera para alternancias rápidas entre tenants
+
+                    using var req2 = CreatePatchRequest();
+                    using var res2 = await _httpClient.SendAsync(req2);
+                    var body2 = await res2.Content.ReadAsStringAsync();
+
+                    if (res2.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation("PATCH unitario OK tras retry (lead={LeadId}, field={FieldId}) → {Body}",
+                            leadId, fieldId, body2);
+                    }
+                    else
+                    {
+                        _logger.LogError("PATCH 401 tras retry (lead={LeadId}, field={FieldId}, tenant={Tenant}) → {Body}",
+                            leadId, fieldId, _tenant.CurrentTenantId, body2);
+                        return;
+                    }
+                }
+                else
+                {
+                    _logger.LogError("PATCH unitario error {Status} (lead={LeadId}, field={FieldId}, tenant={Tenant}) → {Body}",
+                        (int)res1.StatusCode, leadId, fieldId, _tenant.CurrentTenantId, body1);
+                    return;
+                }
             }
 
-            _logger.LogInformation("PATCH unitario OK (lead={LeadId}, field={FieldId}) → {Body}",
-                leadId, fieldId, body);
 
-            // Verificación con 3 reintentos (200ms, 700ms, 1500ms)
+
+            // -------- Verificación con 3 reintentos (200ms, 700ms, 1500ms) --------
             var delays = new[] { 200, 700, 1500 };
             string? seen = null;
 
@@ -104,6 +163,7 @@ namespace KommoAIAgent.Services
                 await Task.Delay(delays[i]);
 
                 using var getReq = BuildRequest(HttpMethod.Get, $"/api/v4/leads/{leadId}");
+                getReq.Version = HttpVersion.Version11; // 👈 también forzar HTTP/1.1 en GET
                 using var getRes = await _httpClient.SendAsync(getReq);
                 var getBody = await getRes.Content.ReadAsStringAsync();
 
@@ -225,6 +285,7 @@ namespace KommoAIAgent.Services
 
             //Kommo A VECES no envía Content-Type así que se infiere el MIME.
         }
+
 
         private static async Task<HttpResponseMessage> WithRetryAsync(
             Func<Task<HttpResponseMessage>> action,

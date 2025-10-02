@@ -43,7 +43,14 @@ builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenan
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 
 // Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
-builder.Services.AddHttpClient<IKommoApiService, KommoApiService>();
+builder.Services.AddHttpClient<IKommoApiService, KommoApiService>()
+     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+     {
+         // Reduce el tiempo de vida del pool para “resetear” conexiones con frecuencia.
+         PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+         // Si algún día vuelves a HTTP/2 y notas coalescing, puedes habilitar múltiples conexiones:
+         // EnableMultipleHttp2Connections = true
+     });
 
 
 // Soporte para caché en memoria, datos temporales e historial dentro de conversaciones.
