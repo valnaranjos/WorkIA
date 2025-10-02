@@ -12,7 +12,9 @@
       int? MonthlyTokenBudget,
       int? AlertThresholdPct,
       int? RatePer5Minutes,
-    int? ImageCacheTTLMinutes
+    int? ImageCacheTTLMinutes,
+    string? SystemPrompt,
+    string? BusinessRulesJson
   );
 
     public sealed record TenantResponse(

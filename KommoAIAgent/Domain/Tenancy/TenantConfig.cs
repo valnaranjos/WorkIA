@@ -1,8 +1,9 @@
-﻿namespace KommoAIAgent.Domain.Tenancy
+﻿using System.Text.Json;
+
+namespace KommoAIAgent.Domain.Tenancy
 { /// <summary>
   /// Contexto del tenant actual (scoped a la request).
   /// Usar siempre vía DI para acceder al TenantId y su configuración
-  /// .
   /// </summary>
     public sealed class TenantConfig
     {
@@ -26,6 +27,10 @@
 
         // Memoria conversacional (TTL + Redis)
         public MemoryConfig Memory { get; init; } = new();
+
+        public string? SystemPrompt { get; set; }
+        public JsonDocument? BusinessRules { get; set; }
+
     }
 
 
@@ -47,7 +52,15 @@
     public sealed class ChatConfig { public string? ScopeId { get; init; } }
 
 
-    public sealed class OpenAIConfig { public required string ApiKey { get; init; } public string Model { get; init; } = "gpt-4o-mini"; public string VisionModel { get; init; } = "gpt-4o"; }
+    public sealed class OpenAIConfig { 
+        public required string ApiKey { get; init; } 
+        public string Model { get; init; } = "gpt-4o-mini"; 
+        public string VisionModel { get; init; } = "gpt-4o";
+        public float? Temperature { get; init; }
+        public float? TopP { get; init; }
+        public int? MaxTokens { get; init; }
+
+    }
 
 
     /// <summary>

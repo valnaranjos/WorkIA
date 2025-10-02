@@ -2,8 +2,9 @@
 using KommoAIAgent.Domain.Tenancy;        // TenantId, Tenant (entity)
 using KommoAIAgent.Infrastructure.Persistence; // AppDbContext
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
-namespace KommoAIAgent.Infraestructure.Tenancy
+namespace KommoAIAgent.Infrastructure.Tenancy
 {
     /// <summary>
     /// Provider de configuraciones de tenant leyendo directamente desde la BD (tabla tenants).
@@ -67,7 +68,7 @@ namespace KommoAIAgent.Infraestructure.Tenancy
 
         private static TenantConfig Map(Tenant t)
         {
-            // Ajusta los nombres si tu TenantConfig difiere.
+            // Mapea la entidad Tenant a TenantConfig.
             return new TenantConfig
             {
                 Slug = t.Slug,
@@ -80,13 +81,22 @@ namespace KommoAIAgent.Infraestructure.Tenancy
                     FieldIds = new FieldIds { MensajeIA = t.KommoMensajeIaFieldId ?? 0 },
                     Chat = new ChatConfig { ScopeId = t.KommoScopeId }
                 },
+                //Configuración de IA (usa variables de entorno si no está en la BD)
                 OpenAI = new OpenAIConfig
                 {
-                    ApiKey = Environment.GetEnvironmentVariable("OPENAI__API_KEY") ?? string.Empty,
+                    ApiKey = "",
                     Model = string.IsNullOrWhiteSpace(t.IaModel) ? "gpt-4o-mini" : t.IaModel,
-                    VisionModel = "gpt-4o"
+                    VisionModel = "gpt-4o",
+                    Temperature = t.Temperature,
+                    TopP = t.TopP,
+                    MaxTokens = t.MaxTokens
                 },
-                // --- Debounce (default estándar) ---
+
+                //Prompting para IA y reglas de negocios x tenant.
+                SystemPrompt = t.SystemPrompt,
+                BusinessRules = t.BusinessRulesJson is null ? null : JsonDocument.Parse(t.BusinessRulesJson),
+
+                // --- Debounce (config estándar) ---
                 Debounce = new DebounceConfig
                 {
                     WindowMs = t.DebounceMs > 0 ? t.DebounceMs : 800,
@@ -98,23 +108,32 @@ namespace KommoAIAgent.Infraestructure.Tenancy
                 Budgets = new BudgetConfig
                 {
                     Period = "Monthly",
-                    TokenLimit = t.MonthlyTokenBudget > 0 ? t.MonthlyTokenBudget : 5_000_000,
+                    //Limite por defecto 2M tokens si no está configurado en la BD.
+                    TokenLimit = t.MonthlyTokenBudget > 0 ? t.MonthlyTokenBudget : 2_000_000,
+                    //Factor de estimación para alertas (default estándar)
                     EstimationFactor = 0.85,
-                    ExceededMessage = null,
+                    //Mensaje de alerta (si es nulo, no avisa)
+                    ExceededMessage = "Has excedido el 85% del presupuesto mensual.",
+                    //Ráfaga máxima por minuto (default estándar)
                     BurstPerMinute = t.RatePerMinute > 0 ? t.RatePerMinute : 12,
-                     AlertThresholdPct = t.AlertThresholdPct > 0 ? t.AlertThresholdPct : 75,
+                    //Umbral de alerta (default estándar)
+                    AlertThresholdPct = t.AlertThresholdPct > 0 ? t.AlertThresholdPct : 75,
+                    //Ráfaga máxima por 5 minutos (default estándar)
                     BurstPer5Minutes = t.RatePer5Minutes > 0 ? t.RatePer5Minutes : 60
                 },
 
                 // --- Memoria (default estándar) ---
                 Memory = new MemoryConfig
                 {
+                    //Memoria en minutos (default 120 min si no está en la BD) x lead
                     TTLMinutes = t.MemoryTTLMinutes > 0 ? t.MemoryTTLMinutes : 120,
+                    //Cache en Redis (usa variable de entorno o cadena vacía)
                     Redis = new RedisConfig
                     {
                         ConnectionString = Environment.GetEnvironmentVariable("REDIS__CS") ?? string.Empty,
                         Prefix = "kommoai"
                     },
+                    //Cache de imágenes (default 3 min si no está en la BD)
                     ImageCacheTTLMinutes = t.ImageCacheTTLMinutes > 0 ? t.ImageCacheTTLMinutes : 3
                 }
             };

@@ -11,6 +11,9 @@ public class Tenant
     public string Slug { get; set; } = null!;        // UK, minúsculas a-z0-9-, <=100
     public string DisplayName { get; set; } = null!;
     public bool IsActive { get; set; } = true;
+    public string? SystemPrompt { get; set; }   // instrucciones base en texto y contexto factual.
+    public string? BusinessRulesJson { get; set; } // reglas estructuradas en JSON crudo
+
 
     // Kommo
     public string KommoBaseUrl { get; set; } = null!; // https://{sub}.kommo.com
