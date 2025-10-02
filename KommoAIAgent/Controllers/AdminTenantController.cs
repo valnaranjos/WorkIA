@@ -4,6 +4,7 @@ using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace KommoAIAgent.Controllers;
@@ -130,6 +131,92 @@ public class TenantsController : ControllerBase
         tenant.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
         return NoContent();
+    }
+
+
+    /// <summary>
+    /// Permite actualizar o agg el prompt del sistema de un tenant.
+    /// </summary>
+    /// <param name="slug">Id para tenant</param>
+    /// <param name="req">Formato según el UpdatePromptRequest</param>
+    /// <returns></returns>
+    [HttpPut("{slug}/prompt")]
+    [Consumes("application/json")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetPrompt([FromRoute] string slug, [FromBody] UpdatePromptRequest req)
+    {
+        var t = await _db.Tenants.FirstOrDefaultAsync(x => x.Slug == slug && x.IsActive);
+        if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
+
+        t.SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim();
+        t.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Permite obtener el prompt del sistema de un tenant.
+    /// </summary>
+    /// <param name="slug"></param>
+    /// <returns></returns>
+    [HttpGet("{slug}/prompt")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetPrompt([FromRoute] string slug)
+    {
+        var t = await _db.Tenants
+            .Where(x => x.Slug == slug && x.IsActive)
+            .Select(x => new { x.Slug, x.DisplayName, x.SystemPrompt })
+            .FirstOrDefaultAsync();
+        if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
+        return Ok(t);
+    }
+
+
+    /// <summary>
+    /// Permite actualizar o agg las reglas de negocio (JSON) de un tenant.
+    /// </summary>
+    /// <param name="slug"></param>
+    /// <param name="req"></param>
+    /// <returns></returns>
+    [HttpPut("{slug}/rules")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetRules([FromRoute] string slug, [FromBody] UpdateRulesRequest req)
+    {
+        // Validar que sea JSON “de verdad”
+        string raw;
+        try { raw = req.Rules.GetRawText(); }
+        catch { return BadRequest(new { error = "Rules no es un JSON válido" }); }
+
+        var t = await _db.Tenants.FirstOrDefaultAsync(x => x.Slug == slug && x.IsActive);
+        if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
+
+        t.BusinessRulesJson = raw.Trim();
+        t.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+        return NoContent();
+    }
+
+
+    /// <summary>
+    /// Permite obtener las reglas de negocio (JSON) de un tenant.
+    /// </summary>
+    /// <param name="slug"></param>
+    /// <returns></returns>
+    [HttpGet("{slug}/rules")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRules([FromRoute] string slug)
+    {
+        var t = await _db.Tenants
+            .Where(x => x.Slug == slug && x.IsActive)
+            .Select(x => new { x.Slug, x.DisplayName, Rules = x.BusinessRulesJson })
+            .FirstOrDefaultAsync();
+        if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
+        return Ok(t);
     }
 
     /// <summary>
