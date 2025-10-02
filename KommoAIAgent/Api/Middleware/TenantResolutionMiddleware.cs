@@ -24,7 +24,8 @@ namespace KommoAIAgent.Api.Middleware
         /// <returns></returns>
         public async Task InvokeAsync(HttpContext http)
         {
-            //Solo para poder usar Swagger en dev sin tenant
+            //Para poder usar Swagger en dev sin tenant
+            //Usar los endpoints /swagger, /health o que incluya /admin sin resolver tenant
             if (http.Request.Path.StartsWithSegments("/swagger") ||
             http.Request.Path.StartsWithSegments("/health") || http.Request.Path.StartsWithSegments("/admin"))
             {
@@ -34,6 +35,9 @@ namespace KommoAIAgent.Api.Middleware
 
             var id = _resolver.Resolve(http);
 
+
+            //_logger.LogDebug("TenantResolver -> '{Slug}' para {Path}{QueryString}", id.Value, http.Request.Path, http.Request.QueryString);
+            
             if (!_cfgProvider.TryGet(id, out var cfg))
             {
                 http.Response.StatusCode = StatusCodes.Status404NotFound;
