@@ -4,12 +4,16 @@ using KommoAIAgent.Infraestructure.Tenancy;
 using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Infrastructure.Persistence;
 using KommoAIAgent.Infrastructure.Tenancy;
+using KommoAIAgent.Knowledge;
 using KommoAIAgent.Services;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using Pgvector.Npgsql;
 
 
 var builder = WebApplication.CreateBuilder(args);
+
 
 // -------------------- MultiTenancy --------------------
 builder.Services.Configure<MultiTenancyOptions>(
@@ -24,15 +28,26 @@ builder.Services.AddScoped<ITenantContext>(sp =>
 // -------------------- EF Core / PostgreSQL --------------------
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 
-//Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría
+
+// DataSource compartido con pgvector (UNA sola vez)
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    var conn = cfg.GetConnectionString("Postgres"); // usa la misma clave en toda la app
+    var dsb = new NpgsqlDataSourceBuilder(conn);
+    dsb.UseVector(); // habilita pgvector en este data source
+    return dsb.Build(); // NpgsqlDataSource
+});
+
+//Conexión a la base de datos PostgreSQL con EF Core y el interceptor de auditoría.
 builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
-{   
-    var conn = builder.Configuration.GetConnectionString("Postgres");
-    opts.UseNpgsql(conn);
+{
+    var dataSource = sp.GetRequiredService<NpgsqlDataSource>();
+    opts.UseNpgsql(dataSource);
     opts.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
-    //Ajuste de compatibilidad de timestamps si te hace falta
     AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 });
+
 
 
 // -------------------- Servicios App --------------------
@@ -40,6 +55,7 @@ builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 //Servicio de configuración de proveedor de IA y su apiKey tanto por tenat como estándar.
 builder.Services.AddSingleton<IAiCredentialProvider, AiCredentialProvider>();
 builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
+builder.Services.AddScoped<OpenAiService>();
 builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 
 // Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
@@ -48,7 +64,7 @@ builder.Services.AddHttpClient<IKommoApiService, KommoApiService>()
      {
          // Reduce el tiempo de vida del pool para “resetear” conexiones con frecuencia.
          PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-         // Si algún día vuelves a HTTP/2 y notas coalescing, puedes habilitar múltiples conexiones:
+         // Si algún día se vuelve a HTTP/2 y notas coalescing, habilitar múltiples conexiones:
          // EnableMultipleHttp2Connections = true
      });
 
@@ -67,7 +83,9 @@ builder.Services.AddSingleton<IRateLimiter, InMemoryRateLimiter>();
 // Presupuesto de tokens por periodo (Daily/Monthly) en memoria por tenant.
 builder.Services.AddSingleton<ITokenBudget, InMemoryPeriodicTokenBudget>();
 
-
+// RAG (fase 2: BD postgres + pgvector)
+builder.Services.AddSingleton<IKnowledgeStore, PgVectorKnowledgeStore>();
+builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 
 //API Básica
 builder.Services.AddControllers();

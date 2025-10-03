@@ -3,9 +3,11 @@ using KommoAIAgent.Application;
 using KommoAIAgent.Application.Common;
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Infrastructure;
+using KommoAIAgent.Knowledge;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using OpenAI.Chat;
+using System.Text;
 
 namespace KommoAIAgent.Services
 {
@@ -24,6 +26,7 @@ namespace KommoAIAgent.Services
         private readonly LastImageCache _lastImage;
         private readonly ITenantContext _tenant;
         private readonly IRateLimiter _limiter;
+        private readonly IKnowledgeStore _kb;
 
         public WebhookHandler(
             IKommoApiService kommoService,
@@ -35,7 +38,8 @@ namespace KommoAIAgent.Services
             IMessageBuffer msgBuffer,
             LastImageCache lastImage,
             ITenantContext tenant,
-            IRateLimiter limiter
+            IRateLimiter limiter,
+            IKnowledgeStore kb
             )
         {
             _kommoService = kommoService;
@@ -48,6 +52,7 @@ namespace KommoAIAgent.Services
             _lastImage = lastImage;
             _tenant = tenant;
             _limiter = limiter;
+            _kb = kb;
         }
 
         /// <summary>
@@ -57,7 +62,7 @@ namespace KommoAIAgent.Services
         /// <returns></returns>
         public async Task ProcessIncomingMessageAsync(KommoWebhookPayload payload)
         {
-            // 1. Extraer y validar el mensaje (esto no cambia).
+            // Extraer y validar el mensaje
             var messageDetails = payload?.Message?.AddedMessages?.FirstOrDefault();
             if (messageDetails is null || !messageDetails.LeadId.HasValue)
             {
@@ -85,7 +90,7 @@ namespace KommoAIAgent.Services
             var userMessage = messageDetails.Text ?? ""; // Usamos "" si el texto es nulo.
             var attachmentCount = messageDetails.Attachments?.Count ?? 0;
 
-            // 4) Debounce ON/OFF (bypass para pruebas)
+            // Debounce ON/OFF (bypass para pruebas)
             var debounceEnabled = _configuration.GetValue("Debounce:Enabled", true);
             if (!debounceEnabled)
             {
@@ -109,7 +114,6 @@ namespace KommoAIAgent.Services
             );
 
             return;
-
         }
 
         /// <summary>
@@ -131,10 +135,8 @@ namespace KommoAIAgent.Services
                 var tenantSlug = _tenant.CurrentTenantId.Value;
                 if (!await _limiter.TryConsumeAsync(tenantSlug, leadId, ct))
                 {
-                    _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);
-                    // (Opcional) Registrar un mensaje de cortesía en Kommo o simplemente salir.
-                    // await _kommoService.UpdateLeadMensajeIAAsync(leadId, "Estamos recibiendo muchos mensajes, en breve te respondemos.", ct);
-                    return; // detenemos el procesamiento para no llamar a OpenAI.
+                    _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);                   
+                    return; // se detiene el procesamiento para no llamar a OpenAI.
                 }
 
                 // Construir el historial de mensajes para enviar a la IA
@@ -156,6 +158,7 @@ namespace KommoAIAgent.Services
                     // Guardar en caché la última imagen para este lead
                     _lastImage.SetLastImage(leadId, bytes, mime);
 
+                    // Prompt por defecto si la imagen viene sin texto
                     var prompt = string.IsNullOrWhiteSpace(userText)
                         ? "Describe la imagen y extrae cualquier texto visible."
                         : userText;
@@ -168,29 +171,101 @@ namespace KommoAIAgent.Services
                 }
                 else
                 {
+                    //Rama de solo texto (sin imagen)
+                    // Recuperación semántica (RAG) antes de llamar a la IA
+                    // Buscamos topK=6 fragmentos relevantes en la KB del tenant
+                    // y los añadimos como un system message de "CONTEXT".
+
+                    List<KbChunkHit>? hits = null;
+                    try
+                    {
+                        // Cache por tenant+query+k (opcional; usa IMemoryCache inyectado)
+                        var cacheKey = $"kbhits:{tenantSlug}:{userText}:{6}";
+                        if (!_cache.TryGetValue(cacheKey, out hits))
+                        {
+                            hits = (await _kb.SearchAsync(tenantSlug, userText, topK: 6, ct: ct)).ToList();
+                            _cache.Set(cacheKey, hits, TimeSpan.FromSeconds(30));
+                        }
+
+                        //Logs de la búsqueda
+                        if (hits.Count > 0)
+                            _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}", hits.Count, hits[0].Score);
+                        else
+                            _logger.LogInformation("RAG sin resultados para tenant={Tenant}", tenantSlug);
+
+                        // Umbral de confianza para decidir si aportamos CONTEXT o pedimos más datos, se recomienda >=0.3
+                        const float MinScore = 0.28f;
+
+                        //Si hay hits buenos, los añadimos al prompt
+                        if (hits.Count > 0 && hits[0].Score >= MinScore)
+                        {
+                            // Construimos BLOQUE CONTEXTO con citas [n]
+                            var sbCtx = new StringBuilder();
+                            sbCtx.AppendLine(
+                                "CONTEXT (RAG): Usa EXCLUSIVAMENTE estos fragmentos para responder. " +
+                                "Cita afirmaciones clave con [n] (n = índice del fragmento). " +
+                                "Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles.\n"
+                            );
+
+                            // Añadir cada fragmento con su índice y título
+                            for (int i = 0; i < hits.Count; i++)
+                            {
+                                var h = hits[i];
+                                var title = string.IsNullOrWhiteSpace(h.Title) ? "Documento" : h.Title!;
+                                // Limitar tamaño de cada trozo para cuidar tokens
+                                sbCtx.AppendLine($"[{i + 1}] ({title}) {TextUtil.Truncate(h.Text, 450)}");
+                            }
+
+                            // Instrucción final para citar fuentes
+                            sbCtx.AppendLine("\nAl final, agrega una línea 'Fuentes:' listando [n] Título de cada fragmento citado.");
+
+                            // Inyectamos el contexto ANTES del mensaje de usuario
+                            messages.Add(ChatMessage.CreateSystemMessage(sbCtx.ToString()));
+                        }
+                        else
+                        {
+                            // Si el match es flojo, instruimos a no inventar
+                            messages.Add(ChatMessage.CreateSystemMessage(
+                                "No hay suficiente contexto relevante. " +
+                                "Responde que no tienes información en la base de conocimiento y pide detalles concretos."
+                            ));
+                        }
+                    }
+                    catch (Exception rex)
+                    {
+                        // Falla en retrieval: seguimos sin contexto, pero conservadores
+                        _logger.LogWarning(rex, "RAG search falló; se continúa sin contexto.");
+                        messages.Add(ChatMessage.CreateSystemMessage(
+                            "El contexto no está disponible por un error de recuperación. " +
+                            "Responde de forma general y pide detalles; no inventes datos específicos."
+                        ));
+                    }
+
+                    //  Finalmente añadimos el mensaje del usuario y pedimos a la IA
                     if (_lastImage.TryGetLastImage(leadId, out var last))
                     {
-                        // Reusa la imagen reciente ⇒ el modelo sí “ve” la misma foto de la pregunta anterior
+                        // Si hay una imagen reciente en cache, reusamos multimodal
                         ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
                     else
                     {
+                        // Solo texto
                         ChatComposer.AppendUserText(messages, userText);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400, model: null, ct);
                     }
 
+                    // Persistimos conversación
                     await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
                     await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
-
                 }
 
-                // Actualizar el lead en Kommo con la respuesta de la IA
+                // Publicamos la respuesta en Kommo (campo de texto largo)
                 const int KOMMO_FIELD_MAX = 8000;
                 await _kommoService.UpdateLeadMensajeIAAsync(
-                leadId,
-                TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
-                CancellationToken.None);
+                    leadId,
+                    TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
+                    CancellationToken.None);
             }
             catch (Exception ex)
             {

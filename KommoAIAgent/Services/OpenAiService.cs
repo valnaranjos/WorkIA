@@ -4,7 +4,9 @@ using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI;
 using OpenAI.Chat;
+using OpenAI.Embeddings;
 using System.ClientModel;
+using System.Reflection;
 
 namespace KommoAIAgent.Services;
 
@@ -13,6 +15,7 @@ namespace KommoAIAgent.Services;
 /// - Multi-tenant: lee ApiKey, modelo y parámetros desde ITenantContext.
 /// - Retry automático en 429/503 con backoff exponencial.
 /// - Soporta texto simple, análisis de imágenes (URL y bytes) e historial conversacional.
+/// - Soporta generación de embeddings para vectores.
 /// </summary>
 public class OpenAiService : IAiService
 {
@@ -20,6 +23,9 @@ public class OpenAiService : IAiService
     private readonly ILogger<OpenAiService> _logger;
     private readonly ITenantContext _tenant;
     private readonly IAiCredentialProvider _keys;
+
+    //Estándar de embedding pequeño y rápido
+    private const string DefaultEmbeddingModel = "text-embedding-3-small";
 
 
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
@@ -58,7 +64,7 @@ public class OpenAiService : IAiService
         var model = cfg.OpenAI?.Model ?? "gpt-4o-mini";
         var maxTokens = cfg.OpenAI?.MaxTokens ?? 400;
 
-        // ✅ Usa el helper centralizado
+        //Usa el helper centralizado
         var messages = BuildSystemMessages();
         messages.Add(ChatMessage.CreateUserMessage(textPrompt ?? string.Empty));
 
@@ -312,5 +318,149 @@ public class OpenAiService : IAiService
         }
 
         return messages;
+    }
+
+    /// <summary>
+    /// Embed un solo texto, devolviendo el vector de floats.
+    /// </summary>
+    /// <param name="model"></param>
+    /// <param name="text"></param>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    public async Task<float[]> GetEmbeddingAsync(string? model, string text, CancellationToken ct = default)
+    {
+        var vectors = await GetEmbeddingsAsync(model, new[] { text }, ct);
+        return vectors[0];
+    }
+
+    /// <summary>
+    /// Embed múltiples textos, devolviendo un array de vectores de floats.
+    /// </summary>
+    /// <param name="model"></param>
+    /// <param name="texts"></param>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
+    public async Task<float[][]> GetEmbeddingsAsync(string? model, IReadOnlyList<string> texts, CancellationToken ct = default)
+    {
+        if (texts == null || texts.Count == 0)
+            return Array.Empty<float[]>();
+
+        var m = string.IsNullOrWhiteSpace(model) ? DefaultEmbeddingModel : model;
+
+        // Reusamos el proveedor de credenciales (igual que para chat)
+        var apiKey = _keys.GetApiKey(_tenant.Config);
+        if (string.IsNullOrWhiteSpace(apiKey))
+            throw new InvalidOperationException("OpenAI API key not found for tenant.");
+
+        //Crea un cliente temporal de embeddings
+        var embClient = new EmbeddingClient(m, apiKey);
+
+        // Fallback universal: 1 request por texto
+        var tasks = texts.Select(t => embClient.GenerateEmbeddingAsync(input: t, cancellationToken: ct)).ToArray();
+        var responses = await Task.WhenAll(tasks);
+
+        //Delegamos la extracción del vector a un método aparte
+        var result = new float[responses.Length][];
+        for (int i = 0; i < responses.Length; i++)
+            result[i] = ExtractEmbeddingVector(responses[i].Value);
+        return result;
+    }
+
+
+    /// <summary>
+    /// Método reflexivo para extraer el vector float[] de un objeto EmbeddingResponse o similar.
+    /// Considera varias propiedades y métodos comunes en distintos SDKs.
+    /// Para evitar dependencias directas, usa reflexión.
+    /// </summary>
+    /// <param name="embeddingObj"></param>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
+    private static float[] ExtractEmbeddingVector(object embeddingObj)
+    {
+        if (embeddingObj is null) return Array.Empty<float>();
+
+        var t = embeddingObj.GetType();
+
+        // Propiedad directa común: Vector / Embedding / Values
+        foreach (var name in new[] { "Vector", "Embedding", "Values" })
+        {
+            var p = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .FirstOrDefault(pp => string.Equals(pp.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (p != null)
+            {
+                var v = p.GetValue(embeddingObj);
+                var arr = TryAsFloatArray(v);
+                if (arr is not null) return arr;
+            }
+        }
+
+        // Algunas variantes devuelven un contenedor: Data / Items / Embeddings
+        foreach (var name in new[] { "Data", "Items", "Embeddings" })
+        {
+            var p = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .FirstOrDefault(pp => string.Equals(pp.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (p != null)
+            {
+                var listObj = p.GetValue(embeddingObj);
+                if (listObj is System.Collections.IEnumerable enumerable)
+                {
+                    foreach (var item in enumerable)
+                    {
+                        var arr = ExtractEmbeddingVector(item!); // recursivo
+                        if (arr.Length > 0) return arr;
+                    }
+                }
+            }
+        }
+
+        // Método utilitario ocasional: ToArray/ToFloats/AsFloatArray
+        foreach (var mname in new[] { "ToArray", "ToFloats", "AsFloatArray" })
+        {
+            var m = t.GetMethod(mname, BindingFlags.Public | BindingFlags.Instance, binder: null, types: Type.EmptyTypes, modifiers: null);
+            if (m != null)
+            {
+                var v = m.Invoke(embeddingObj, null);
+                var arr = TryAsFloatArray(v);
+                if (arr is not null) return arr;
+            }
+        }
+
+        //Si llegamos acá, no pudimos extraer el vector
+        throw new InvalidOperationException($"No pude localizar el vector en tipo {t.FullName}. Revisa el SDK; si te dice el nombre de la propiedad, lo agrego a la lista.");
+    }
+
+
+    /// <summary>
+    /// Método helper para intentar convertir un objeto a float[].
+    /// </summary>
+    /// <param name="v"></param>
+    /// <returns></returns>
+    private static float[]? TryAsFloatArray(object? v)
+    {
+        //Usa pattern matching para varios casos comunes
+        switch (v)
+        {
+            //Casos comunes directos y convertibles a float[] 
+            case null: return null; //Devuelve null si no hay valor
+            case float[] fa: return fa; // ya es float[]
+            case ReadOnlyMemory<float> rom: return rom.ToArray(); // ya es ReadOnlyMemory<float>
+            case Memory<float> mem: return mem.ToArray(); // ya es Memory<float>
+            case IEnumerable<float> ef: return ef.ToArray(); // ya es IEnumerable<float>
+            case IEnumerable<double> ed: return ed.Select(x => (float)x).ToArray(); // es IEnumerable<double>, convertimos a float
+            case System.Collections.IEnumerable ie: 
+                {
+                    var list = new List<float>();
+                    //Para cada elemento, intentamos convertir a float
+                    foreach (var x in ie)
+                    {
+                        if (x is float f) list.Add(f);
+                        else if (x is double d) list.Add((float)d);
+                        else return null; // mezcla rara; probamos otro camino
+                    }
+                    return list.Count > 0 ? list.ToArray() : null;
+                }
+            default: return null;
+        }
     }
 }
