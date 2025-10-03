@@ -26,11 +26,27 @@ namespace KommoAIAgent.Domain.Tenancy
         public BudgetConfig Budgets { get; init; } = new();
 
         // Memoria conversacional (TTL + Redis)
-        public MemoryConfig Memory { get; init; } = new();
+        public MemoryConfig Memory { get; init; } = new();        
 
-        public string? SystemPrompt { get; set; }
+        // Reglas de negocio en JSON (por tenant)
         public JsonDocument? BusinessRules { get; set; }
 
+        /// <summary>
+        /// >Reglas de negocio, como texto plano (se guarda en DB como JSON o raw).
+        /// </summary>
+        /// <param name="json"></param>
+        public void SetBusinessRules(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                BusinessRules = null;
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            // Clonar para no depender del using local
+            BusinessRules = JsonDocument.Parse(doc.RootElement.GetRawText());
+        }
     }
 
 
@@ -39,27 +55,50 @@ namespace KommoAIAgent.Domain.Tenancy
     /// </summary>
     public sealed class KommoConfig
     {
+        //URL base de la API de Kommo (p.ej. https://yourdomain.amocrm.com)
         public required string BaseUrl { get; init; }
+
+        //Token de acceso API (Token de larga duración por ahora)
         public required string AccessToken { get; init; }
 
         //Campos personalizados 
         public FieldIds FieldIds { get; init; } = new();
+
+        // Configuración de chat (se usa módulo de chat en Kommo)
         public ChatConfig Chat { get; init; } = new();
     }
 
 
+    // IDs de campos personalizados en Kommo (por ahora, solo uno, donde devuelve el mensaje la IA)
     public sealed class FieldIds { public long MensajeIA { get; init; } }
+
+    // Configuración del módulo de chat en Kommo
     public sealed class ChatConfig { public string? ScopeId { get; init; } }
 
 
-    public sealed class OpenAIConfig { 
-        public required string ApiKey { get; init; } 
-        public string Model { get; init; } = "gpt-4o-mini"; 
+    /// <summary>
+    /// Configuración específica para OpenAI por tenant. Próximo a cambio para soportar otros proveedores.
+    /// </summary>
+    public sealed class OpenAIConfig {
+        //API Key privada del tenant (usada server-side, no exponer nunca)
+        public required string ApiKey { get; init; }
+
+        // Modelos a usar (si el tenant no especifica otro)
+        public string Model { get; init; } = "gpt-4o-mini";
+
+        // Modelo para análisis de imágenes (si el tenant no especifica otro)
         public string VisionModel { get; init; } = "gpt-4o";
+
+        // Parámetros por defecto para las llamadas a OpenAI (si el tenant no especifica otro)
         public float? Temperature { get; init; }
+
+        // Control de diversidad en la generación (si el tenant no especifica otro)
         public float? TopP { get; init; }
+        // Máximo de tokens a generar (si el tenant no especifica otro)
         public int? MaxTokens { get; init; }
 
+        // Prompt del sistema (por tenant)
+        public string? SystemPrompt { get; set; }
     }
 
 
@@ -102,7 +141,11 @@ namespace KommoAIAgent.Domain.Tenancy
 
         // 🔙 Límite de ráfagas por minuto (0 = sin límite)
         public int BurstPerMinute { get; init; } = 12;
+
+        // Alerta cuando se supera este % del presupuesto
         public int AlertThresholdPct { get; set; } = 75;
+
+        // Límite de ráfagas por 5 minutos (0 = sin límite)
         public int BurstPer5Minutes { get; set; } = 60;
     }
 
@@ -117,6 +160,7 @@ namespace KommoAIAgent.Domain.Tenancy
         // Configuración de Redis (si no hay ConnectionString, se usa InMemory fallback)
         public RedisConfig Redis { get; init; } = new();
 
+        // Tiempo de vida del caché de imágenes (minutos)
         public int ImageCacheTTLMinutes { get; set; } = 3;
     }
 

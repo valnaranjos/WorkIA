@@ -13,7 +13,7 @@ namespace KommoAIAgent.Infrastructure.Tenancy
     {
         private readonly IServiceScopeFactory _scopeFactory;
 
-       public DbTenantConfigProvider(IServiceScopeFactory scopeFactory)
+        public DbTenantConfigProvider(IServiceScopeFactory scopeFactory)
         {
             _scopeFactory = scopeFactory;
         }
@@ -81,19 +81,20 @@ namespace KommoAIAgent.Infrastructure.Tenancy
                     FieldIds = new FieldIds { MensajeIA = t.KommoMensajeIaFieldId ?? 0 },
                     Chat = new ChatConfig { ScopeId = t.KommoScopeId }
                 },
+
                 //Configuración de IA (usa variables de entorno si no está en la BD)
                 OpenAI = new OpenAIConfig
                 {
-                    ApiKey = "",
+                    ApiKey = "", //Se resuelve por AiCredentialsProvider
                     Model = string.IsNullOrWhiteSpace(t.IaModel) ? "gpt-4o-mini" : t.IaModel,
                     VisionModel = "gpt-4o",
                     Temperature = t.Temperature,
                     TopP = t.TopP,
-                    MaxTokens = t.MaxTokens
+                    MaxTokens = t.MaxTokens,
+                    SystemPrompt = t.SystemPrompt,
                 },
 
-                //Prompting para IA y reglas de negocios x tenant.
-                SystemPrompt = t.SystemPrompt,
+                //Prompting para IA y reglas de negocios x tenant.             
                 BusinessRules = t.BusinessRulesJson is null ? null : JsonDocument.Parse(t.BusinessRulesJson),
 
                 // --- Debounce (config estándar) ---

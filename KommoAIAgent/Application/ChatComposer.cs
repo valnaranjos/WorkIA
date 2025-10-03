@@ -25,25 +25,43 @@ namespace KommoAIAgent.Application
             IChatMemoryStore store,
             ITenantContext tenant,
             long leadId,
-            string systemPrompt,
             int historyTurns = 10,
             CancellationToken ct = default)
         {
-            var messages = new List<ChatMessage>
+            var cfg = tenant.Config;
+            var messages = new List<ChatMessage>();
+
+            // 1) System prompt del tenant (con fallback)
+            var systemPrompt = string.IsNullOrWhiteSpace(cfg.OpenAI?.SystemPrompt)
+                ? "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho."
+                : cfg.OpenAI!.SystemPrompt!.Trim();
+
+            messages.Add(ChatMessage.CreateSystemMessage(systemPrompt));
+
+            // Business rules del tenant (si existen)
+            if (cfg.BusinessRules is not null)
             {
-                ChatMessage.CreateSystemMessage(systemPrompt)
-            };
+                try
+                {
+                    var rulesText = cfg.BusinessRules.RootElement.GetRawText();
+                    if (!string.IsNullOrWhiteSpace(rulesText))
+                    {
+                        messages.Add(ChatMessage.CreateSystemMessage(
+                            $"REGLAS DE NEGOCIO (síguelas estrictamente):\n{rulesText}"
+                        ));
+                    }
+                }
+                catch { /*Dsps poner log warning*/ }
+            }
 
-
-            // Lee historial usando el contrato NUEVO (async + tenant)
+            // Historial conversacional
             var history = await store.GetAsync(
-                tenant.CurrentTenantId.Value, // slug/Id del tenant
+                tenant.CurrentTenantId.Value,
                 leadId,
                 historyTurns,
                 ct
             );
 
-            // Pone el historial en el formato del SDK
             foreach (var (role, content) in history)
             {
                 messages.Add(

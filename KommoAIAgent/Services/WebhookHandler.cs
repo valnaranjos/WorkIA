@@ -139,10 +139,7 @@ namespace KommoAIAgent.Services
 
                 // Construir el historial de mensajes para enviar a la IA
                 var messages = await ChatComposer.BuildHistoryMessagesAsync(
-                    _conv, _tenant, leadId,
-                    "Eres un asistente útil, conciso y amable. Usa el contexto previo si el usuario hace referencia a algo ya dicho.",
-                    historyTurns: 10, ct
-                );
+                _conv, _tenant, leadId, historyTurns: 10, ct);
 
                 string aiResponse;
 

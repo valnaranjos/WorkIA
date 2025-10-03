@@ -62,7 +62,9 @@ namespace KommoAIAgent.Api.Contracts
         int MonthlyTokenBudget,
         int AlertThresholdPct,
         DateTime CreatedAt,
-        DateTime? UpdatedAt
+        DateTime? UpdatedAt,
+        string? SystemPrompt,
+    string? BusinessRulesJson
     );
 
     /// <summary>

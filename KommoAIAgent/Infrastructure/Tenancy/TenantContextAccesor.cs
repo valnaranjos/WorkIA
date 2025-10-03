@@ -1,7 +1,7 @@
 ﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Domain.Tenancy;
 
-namespace KommoAIAgent.Infraestructure.Tenancy
+namespace KommoAIAgent.Infrastructure.Tenancy
 {
     /// <summary>
     /// Accesor para el contexto del tenant actual, usando AsyncLocal para mantener el contexto por petición.

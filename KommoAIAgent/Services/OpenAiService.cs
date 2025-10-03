@@ -1,5 +1,6 @@
 ﻿using KommoAIAgent.Application.Common;
 using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI;
 using OpenAI.Chat;
@@ -8,121 +9,81 @@ using System.ClientModel;
 namespace KommoAIAgent.Services;
 
 /// <summary>
-///Implementación del servicio de IA (SDK oficial OpenAI) con configuración por tenant.
+/// Implementación del servicio de IA usando el SDK oficial de OpenAI.
+/// - Multi-tenant: lee ApiKey, modelo y parámetros desde ITenantContext.
+/// - Retry automático en 429/503 con backoff exponencial.
+/// - Soporta texto simple, análisis de imágenes (URL y bytes) e historial conversacional.
 /// </summary>
 public class OpenAiService : IAiService
 {
     private readonly OpenAIClient _client;
     private readonly ILogger<OpenAiService> _logger;
     private readonly ITenantContext _tenant;
-    private readonly ITokenBudget _budget;
     private readonly IAiCredentialProvider _keys;
 
+
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
-    public OpenAiService(ITenantContext tenant, 
+    public OpenAiService(ITenantContext tenant,
         ILogger<OpenAiService> logger,
-        ITokenBudget budget,
         IAiCredentialProvider keys)
     {
         _logger = logger;
         _tenant = tenant;
         _keys = keys;
 
+        // Validación: el tenant debe estar resuelto
+        if (string.IsNullOrWhiteSpace(_tenant.CurrentTenantId.Value))
+            throw new InvalidOperationException("TenantId no puede estar vacío");
+
+        // Obtiene la ApiKey del tenant (desde BD, secrets o variable de entorno)
         var apiKey = _keys.GetApiKey(_tenant.Config);
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{_tenant.CurrentTenantId}'");
 
-        // Creamos el cliente oficial de OpenAI.
+        // Crea el cliente oficial de OpenAI con la ApiKey del tenant
         _client = new OpenAIClient(apiKey);
-        _budget = budget;
-        _keys = keys;
+
+        _logger.LogInformation("OpenAiService inicializado para tenant={Tenant}",
+        _tenant.CurrentTenantId.Value);
     }
 
     /// <summary>
     /// Genera una respuesta de texto a partir de un prompt de usuario.
+    /// - Usa SystemPrompt y BusinessRules del tenant si están configurados.
+    /// - Aplica parámetros (temperature, topP, maxTokens) desde TenantConfig.
     /// </summary>
-    public async Task<string> GenerateContextualResponseAsync(string textPrompt)
+    public async Task<string> GenerateContextualResponseAsync(string textPrompt, CancellationToken ct = default)
     {
-        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
-        var maxTok = 400;
-        _logger.LogInformation("↗️ OpenAI.Generate (tenant={Tenant}, model={Model})", _tenant.CurrentTenantId, model);
+        var cfg = _tenant.Config;
+        var model = cfg.OpenAI?.Model ?? "gpt-4o-mini";
+        var maxTokens = cfg.OpenAI?.MaxTokens ?? 400;
 
-        try
+        // ✅ Usa el helper centralizado
+        var messages = BuildSystemMessages();
+        messages.Add(ChatMessage.CreateUserMessage(textPrompt ?? string.Empty));
+
+        var chatClient = _client.GetChatClient(model);
+        var options = new ChatCompletionOptions
         {
-            // La lista de mensajes se construye con clases diferentes directo de la líbrería.
-            ChatMessage[] messages =
-            {
-            ChatMessage.CreateSystemMessage("Eres un asistente virtual experto y amigable. Responde de forma concisa y profesional."),
-            ChatMessage.CreateUserMessage(textPrompt)
-             };
+            MaxOutputTokenCount = maxTokens,
+            Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f),
+            TopP = (float)(cfg.OpenAI?.TopP ?? 1.0f)
+        };
 
-            var chatClient = _client.GetChatClient(model);
-            var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
+        var completion = await CallWithRetryAsync(
+            () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
+            _logger,
+            ct
+        );
 
-            // Llamada con retry en 429/503
-            var completion = await CallWithRetryAsync(
-            () => chatClient.CompleteChatAsync(messages, options),
-            _logger
-             );
-
-            // Extrae la respuesta del primer choice
-            var aiResponse = completion.Content?.FirstOrDefault()?.Text;
-            _logger.LogInformation("Respuesta recibida de OpenAI exitosamente. (tenant={Tenant})", _tenant.CurrentTenantId);
-            return aiResponse ?? "No se pudo obtener una respuesta.";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Ocurrió una excepción al comunicarse con la API oficial de OpenAI.(tenant={Tenant})", _tenant.CurrentTenantId);
-            return "Hubo un error crítico al contactar al servicio de IA.";
-        }
+        return completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
     }
 
-    /// <summary>
-    /// Analiza una imagen vía URL pública y responde con texto contextual.
-    /// </summary>
-    /// <param name="textPrompt"></param>
-    /// <param name="imageUrl"></param>
-    /// <returns></returns>
-    public async Task<string> AnalyzeImageAndRespondAsync(string textPrompt, string imageUrl)
-    {
-        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
-        var maxTok = 400;
-
-        _logger.LogInformation("↗️ OpenAI.Vision-URL (tenant={Tenant}, model={Model}, url={Url})",
-            _tenant.CurrentTenantId, model, MediaUtils.MaskUrl(imageUrl));
-
-        try
-        {
-            ChatMessage[] messages =
-            [
-                ChatMessage.CreateSystemMessage("Eres un asistente virtual experto. Analiza la imagen proporcionada y responde de forma útil y concisa."),
-                    ChatMessage.CreateUserMessage(
-                        ChatMessageContentPart.CreateTextPart(textPrompt ?? string.Empty),
-                        ChatMessageContentPart.CreateImagePart(new Uri(imageUrl))   // URL pública
-                    )
-            ];
-
-            var chatClient = _client.GetChatClient(model);
-            var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
-
-            var completion = await CallWithRetryAsync(
-                () => chatClient.CompleteChatAsync(messages, options),
-                _logger
-            );
-
-            var aiResponse = completion.Content.FirstOrDefault()?.Text;
-            _logger.LogInformation("✅ OpenAI Vision OK (tenant={Tenant})", _tenant.CurrentTenantId);
-            return aiResponse ?? "No se pudo obtener una respuesta sobre la imagen.";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "❌ OpenAI Vision error (tenant={Tenant})", _tenant.CurrentTenantId);
-            return "Hubo un error crítico al analizar la imagen con la IA.";
-        }
-    }
 
     /// <summary>
-    /// Analiza una imagen a partir de un arreglo de bytes.
+    /// Analiza una imagen desde un arreglo de bytes en memoria.
+    /// - Usa SystemPrompt y BusinessRules del tenant.
+    /// - Requiere especificar el MIME type.
     /// </summary>
     /// <param name="textPrompt"></param>
     /// <param name="imageBytes"></param>
@@ -130,38 +91,51 @@ public class OpenAiService : IAiService
     /// <returns></returns>
     public async Task<string> AnalyzeImageFromBytesAsync(string textPrompt, byte[] imageBytes, string mimeType)
     {
-        var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
-        var maxTok = 400;
+        var cfg = _tenant.Config;
+        var model = cfg.OpenAI?.VisionModel ?? "gpt-4o";
+        var maxTokens = cfg.OpenAI?.MaxTokens ?? 600;
 
-        _logger.LogInformation("↗️ OpenAI.Vision-Bytes (tenant={Tenant}, model={Model}, mime={Mime})",
-            _tenant.CurrentTenantId, model, mimeType);
+        _logger.LogInformation(
+        "OpenAI Vision (Bytes) → tenant={Tenant}, model={Model}, mime={Mime}, size={Size}KB",
+        _tenant.CurrentTenantId, model, mimeType, imageBytes.Length / 1024);
 
         try
         {
-            ChatMessage[] messages =
-            [
-                ChatMessage.CreateSystemMessage("Eres un analista de imágenes. Responde breve, claro y útil."),
-                    ChatMessage.CreateUserMessage(
-                        ChatMessageContentPart.CreateTextPart(textPrompt ?? "Describe la imagen y extrae cualquier texto visible."),
-                        ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(imageBytes), mimeType)
-                    )
-            ];
+            // Usa helper 
+            var messages = BuildSystemMessages();
+
+            // Usuario: texto + imagen en bytes
+            messages.Add(
+                ChatMessage.CreateUserMessage(
+                    ChatMessageContentPart.CreateTextPart(
+                        textPrompt ?? "Describe la imagen y extrae cualquier texto visible."
+                    ),
+                    ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(imageBytes), mimeType)
+                )
+            );
 
             var chatClient = _client.GetChatClient(model);
-            var options = new ChatCompletionOptions { MaxOutputTokenCount = maxTok };
+            var options = new ChatCompletionOptions
+            {
+                MaxOutputTokenCount = maxTokens,
+                Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f),
+                TopP = (float)(cfg.OpenAI?.TopP ?? 1.0f)
+            };
 
             var completion = await CallWithRetryAsync(
                 () => chatClient.CompleteChatAsync(messages, options),
                 _logger
             );
 
-            var aiText = completion.Content?.FirstOrDefault()?.Text;
-            _logger.LogInformation("✅ OpenAI Vision BYTES OK (tenant={Tenant})", _tenant.CurrentTenantId);
-            return aiText ?? "No pude extraer información de la imagen.";
+            var aiText = completion?.Content?.FirstOrDefault()?.Text
+                ?? "No pude extraer información de la imagen.";
+
+            _logger.LogInformation("OpenAI Vision BYTES OK (tenant={Tenant})", _tenant.CurrentTenantId);
+            return aiText;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ OpenAI Vision BYTES error (tenant={Tenant})", _tenant.CurrentTenantId);
+            _logger.LogError(ex, "OpenAI Vision BYTES falló (tenant={Tenant})", _tenant.CurrentTenantId);
             return "⚠️ No pude analizar la imagen por ahora. Un agente te ayudará enseguida.";
         }
     }
@@ -202,6 +176,8 @@ public class OpenAiService : IAiService
     ILogger logger,
     CancellationToken ct = default)
     {
+        Exception? lastException = null;
+
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             try
@@ -209,29 +185,53 @@ public class OpenAiService : IAiService
                 var res = await call();
                 return res.Value; // ChatCompletion
             }
-            catch (ClientResultException ex) when ((ex.Status == 429 || ex.Status == 503) && attempt < 3) // del SDK oficial
+            catch (ClientResultException ex) when (ex.Status == 429 || ex.Status == 503)
             {
-                // Lee Retry - After de forma segura
-                string? retryAfter = null;
-                var raw = ex.GetRawResponse();
-                raw?.Headers.TryGetValue("retry-after", out retryAfter);
+                lastException = ex;
 
-                var delay = int.TryParse(retryAfter, out var seconds)
+                // Si es el último intento, no hacemos retry
+                if (attempt == 3)
+                {
+                    logger.LogError(ex, "OpenAI {Status} tras 3 intentos. Fallando.", ex.Status);
+                    throw; // Propaga la excepción original
+                }
+
+                // Leer Retry-After si existe
+                string? retryAfterHeader = null;
+                var rawResponse = ex.GetRawResponse();
+                rawResponse?.Headers.TryGetValue("retry-after", out retryAfterHeader);
+
+                var delay = int.TryParse(retryAfterHeader, out var seconds)
                     ? TimeSpan.FromSeconds(seconds)
                     : TimeSpan.FromMilliseconds(300 * attempt + Random.Shared.Next(0, 300));
 
-                logger.LogWarning(ex, "OpenAI {Status}. Retry {Attempt} en {Delay}.", ex.Status, attempt, delay);
+                logger.LogWarning(
+                    "OpenAI {Status} en intento {Attempt}/3. Reintentando en {Delay}ms...",
+                    ex.Status, attempt, delay.TotalMilliseconds);
+
                 await Task.Delay(delay, ct);
             }
-        catch (HttpRequestException ex) when(attempt < 3)
-        {
-            var delay = TimeSpan.FromMilliseconds(300 * attempt + Random.Shared.Next(0, 300));
-            logger.LogWarning(ex, "Error de red hacia OpenAI. Retry {Attempt} en {Delay}.", attempt, delay);
-            await Task.Delay(delay, ct);
+            catch (HttpRequestException ex)
+            {
+                lastException = ex;
+
+                if (attempt == 3)
+                {
+                    logger.LogError(ex, "Error de red tras 3 intentos. Fallando.");
+                    throw;
+                }
+
+                var delay = TimeSpan.FromMilliseconds(300 * attempt + Random.Shared.Next(0, 300));
+                logger.LogWarning(ex,
+                    "Error de red en intento {Attempt}/3. Reintentando en {Delay}ms...",
+                    attempt, delay.TotalMilliseconds);
+
+                await Task.Delay(delay, ct);
+            }
         }
-    }
-        // Último intento sin catch para propagar error si falla nuevamente
-        return (await call()).Value;
+
+        // Este código nunca debería ejecutarse, pero por seguridad:
+        throw lastException ?? new InvalidOperationException("Retry loop terminó sin excepción");
     }
 
     /// <summary>
@@ -241,49 +241,76 @@ public class OpenAiService : IAiService
     /// <param name="maxTokens"></param>
     /// <param name="model"></param>
     /// <returns></returns>
-    public async Task<string> CompleteAsync(IEnumerable<ChatMessage> messages, int maxTokens = 400, string? model = null, CancellationToken ct = default)
+    public async Task<string> CompleteAsync(
+     IEnumerable<ChatMessage> messages,
+     int maxTokens = 400,
+     string? model = null,
+     CancellationToken ct = default)
     {
-        // 1) Estimación previa menos conservadora
-        var factor = _tenant.Config.Budgets?.EstimationFactor ?? 0.85;
-        var estimate = (int)Math.Ceiling((maxTokens > 0 ? maxTokens : 400) * factor);
+        var cfg = _tenant.Config;
 
-        // 2) ¿El tenat tiene presupuesto?
-        if (!await _budget.CanConsumeAsync(_tenant, estimate, ct))
+        // Usa el modelo del tenant si no se especifica otro
+        var selectedModel = model ?? cfg.OpenAI?.Model ?? "gpt-4o-mini";
+
+        var chatClient = _client.GetChatClient(selectedModel);
+
+        var options = new ChatCompletionOptions
         {
-            var limit = _tenant.Config.Budgets?.TokenLimit ?? 0;
-            var used = await _budget.GetUsedTodayAsync(_tenant, ct);
-            var msg = _tenant.Config.Budgets?.ExceededMessage
-                        ?? "Hemos alcanzado el presupuesto del periodo. Intenta de nuevo más tarde.";
+            MaxOutputTokenCount = maxTokens,
+            Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f), 
+            TopP = (float)(cfg.OpenAI?.TopP ?? 1.0f)
+        };
 
-            _logger.LogWarning("Budget exceeded: tenant={Tenant} used={Used} limit={Limit}",
-                _tenant.CurrentTenantId.Value, used, limit);
+        _logger.LogDebug(
+            "CompleteAsync → tenant={Tenant}, model={Model}, msgs={Count}, maxTokens={Max}",
+            _tenant.CurrentTenantId, selectedModel, messages.Count(), maxTokens);
 
-            return msg;
-        }
-
-        // 3) Llamada real al modelo
-        var modelToUse = model ?? _tenant.Config.OpenAI.Model;
-
-             var chat = _client.GetChatClient(modelToUse);
-
-        var result = await chat.CompleteChatAsync(
-            messages.ToList(),
-            new ChatCompletionOptions
-            {
-                MaxOutputTokenCount = maxTokens
-            },
+        var completion = await CallWithRetryAsync(
+            () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
+            _logger,
             ct
         );
 
-        var text = result.Value.Content?.FirstOrDefault()?.Text ?? string.Empty;
+        return completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+    }
 
-        // 4) Registrar consumo real
-        var usage = result.Value.Usage;
-        var usedTokens = (usage?.InputTokenCount ?? 0) + (usage?.OutputTokenCount ?? 0);
-        if (usedTokens == 0) usedTokens = estimate;
+    /// <summary>
+    /// Construye los mensajes de sistema (SystemPrompt + BusinessRules) desde la configuración del tenant.
+    /// Método reutilizable en todos los métodos del servicio.
+    /// </summary>
+    private List<ChatMessage> BuildSystemMessages()
+    {
+        var cfg = _tenant.Config;
+        var messages = new List<ChatMessage>();
 
+        // 1) System prompt del tenant (con fallback seguro)
+        var systemPrompt = string.IsNullOrWhiteSpace(cfg.OpenAI?.SystemPrompt)
+            ? "Eres un asistente virtual experto y amigable. Responde de forma concisa y profesional."
+            : cfg.OpenAI!.SystemPrompt!.Trim();
 
-        return text; 
-       
+        messages.Add(ChatMessage.CreateSystemMessage(systemPrompt));
+
+        // 2) Business rules del tenant (si existen)
+        if (cfg.BusinessRules is not null)
+        {
+            try
+            {
+                var rulesText = cfg.BusinessRules.RootElement.GetRawText();
+                if (!string.IsNullOrWhiteSpace(rulesText))
+                {
+                    messages.Add(ChatMessage.CreateSystemMessage(
+                        $"REGLAS DE NEGOCIO (síguelas estrictamente):\n{rulesText}"
+                    ));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "No se pudieron aplicar BusinessRules (tenant={Tenant})",
+                    _tenant.CurrentTenantId);
+            }
+        }
+
+        return messages;
     }
 }

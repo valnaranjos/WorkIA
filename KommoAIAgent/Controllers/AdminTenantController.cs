@@ -226,5 +226,5 @@ public class TenantsController : ControllerBase
     /// <returns></returns>
     private static TenantResponse ToResponse(Tenant t) =>
         new(t.Id, t.Slug, t.DisplayName, t.IsActive, t.KommoBaseUrl, t.IaProvider, t.IaModel,
-            t.MonthlyTokenBudget, t.AlertThresholdPct, t.CreatedAt, t.UpdatedAt);
+            t.MonthlyTokenBudget, t.AlertThresholdPct, t.CreatedAt, t.UpdatedAt, t.SystemPrompt, t.BusinessRulesJson);
 }
