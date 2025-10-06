@@ -18,9 +18,14 @@
         Task<int> RechunkAndEmbedAsync(string tenant, long documentId, CancellationToken ct = default);
 
         // Borrado de documento
-        Task<bool> DeleteDocumentAsync(string tenant, string sourceId, CancellationToken ct = default);
+        Task<int> DeleteDocumentAsync(string tenant, string sourceId, CancellationToken ct = default);
 
         // Búsqueda de chunks relevantes
-        Task<IReadOnlyList<KbChunkHit>> SearchAsync(string tenant, string query, int topK = 6, string[]? mustTags = null, CancellationToken ct = default);
+        Task<IReadOnlyList<KbChunkHit>> SearchAsync(string tenant,
+        string query,
+        int topK,
+        string[]? mustTags = null,
+        string tagMatch = "any",
+        CancellationToken ct = default);
     }
 }

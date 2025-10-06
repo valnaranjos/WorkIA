@@ -1,26 +1,26 @@
-﻿using System.Data;
-using System.Text;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
+﻿using Npgsql;
 using NpgsqlTypes;
 using Pgvector;
+using System.Data;
+using Pgvector.Npgsql;
 
 namespace KommoAIAgent.Knowledge;
 
 /// <summary>
-/// Base de conocimiento usando PostgreSQL con extensión pgvector para almacenamiento y búsqueda vectorial.
+/// Base de conocimiento KB usando PostgreSQL con extensión pgvector para almacenamiento y búsqueda vectorial.
 /// </summary>
 public sealed class PgVectorKnowledgeStore : IKnowledgeStore
 {
     //Datasource de conexión a PostgreSQL
     private readonly NpgsqlDataSource _dataSource;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IEmbedder _embedder;
 
-    public PgVectorKnowledgeStore(NpgsqlDataSource dataSource, IServiceScopeFactory scopeFactory)
+    public PgVectorKnowledgeStore(NpgsqlDataSource dataSource, IServiceScopeFactory scopeFactory, IEmbedder embedder)
     {
         _dataSource = dataSource;
         _scopeFactory = scopeFactory;
+        _embedder = embedder;
     }
 
     /// <summary>
@@ -77,7 +77,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
 
-        // 1) lee contenido
+        // lee contenido
         string? content;
         await using (var cmd = new NpgsqlCommand(@"SELECT content FROM kb_documents WHERE tenant_slug=@t AND id=@id", conn))
         {
@@ -87,7 +87,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
         }
         if (string.IsNullOrWhiteSpace(content)) return 0;
 
-        // 2) rechunk
+        //  rechunk
         var parts = content.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries)
                            .Select(p => p.Trim())
                            .ToArray();
@@ -107,7 +107,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
         }
         if (buf.Count > 0) chunks.Add(string.Join("\n\n", buf));
 
-        // 3) embeddings (resuelve IEmbedder por scope)
+        // embeddings (resuelve IEmbedder por scope)
         float[][] vectors;
         using (var scope = _scopeFactory.CreateScope())
         {
@@ -115,7 +115,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
             vectors = await embedder.EmbedBatchAsync(chunks, ct);
         }
 
-        // 4) borra chunks previos
+        // borra chunks previos
         await using (var del = new NpgsqlCommand(@"DELETE FROM kb_chunks WHERE tenant_slug=@t AND document_id=@d", conn))
         {
             del.Parameters.AddWithValue("t", NpgsqlDbType.Text, tenant);
@@ -123,7 +123,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
             await del.ExecuteNonQueryAsync(ct);
         }
 
-        // 5) bulk insert (COPY) con vector
+        // bulk insert (COPY) con vector
         using (var writer = conn.BeginBinaryImport(@"COPY kb_chunks (tenant_slug, document_id, chunk_index, text, embedding, token_count) FROM STDIN (FORMAT BINARY)"))
         {
             for (int i = 0; i < chunks.Count; i++)
@@ -133,7 +133,7 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
                 writer.Write(documentId, NpgsqlDbType.Bigint);
                 writer.Write(i, NpgsqlDbType.Integer);
                 writer.Write(chunks[i], NpgsqlDbType.Text);
-                writer.Write(new Vector(vectors[i]));                // <- gracias a UseVector()
+                writer.Write(new Vector(vectors[i]));
                 writer.Write(Math.Max(chunks[i].Length / 4, 1), NpgsqlDbType.Integer);
             }
             writer.Complete();
@@ -150,17 +150,16 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
     /// <param name="sourceId"></param>
     /// <param name="ct"></param>
     /// <returns></returns>
-    public async Task<bool> DeleteDocumentAsync(string tenant, string sourceId, CancellationToken ct = default)
+    public async Task<int> DeleteDocumentAsync(string tenant, string sourceId, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
- 
 
-        await using var cmd = new NpgsqlCommand(@"DELETE FROM kb_documents WHERE tenant_slug=@t AND source_id=@s", conn);
+        const string sql = @"DELETE FROM kb_documents WHERE tenant_slug=@t AND source_id=@s;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("t", NpgsqlDbType.Text, tenant);
         cmd.Parameters.AddWithValue("s", NpgsqlDbType.Text, sourceId);
 
-        var affected = await cmd.ExecuteNonQueryAsync(ct);
-        return affected > 0;
+        return await cmd.ExecuteNonQueryAsync(ct);
     }
 
     /// <summary>
@@ -172,66 +171,65 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
     /// <param name="mustTags"></param>
     /// <param name="ct"></param>
     /// <returns></returns>
-    public async Task<IReadOnlyList<KbChunkHit>> SearchAsync(string tenant, string query, int topK = 6, string[]? mustTags = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<KbChunkHit>> SearchAsync(
+     string tenant,
+     string query,
+     int topK,
+     string[]? mustTags = null,
+     string tagMatch = "any",
+     CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(query))
-            return Array.Empty<KbChunkHit>();
-
-        // 1) embed query
-        float[] qvec;
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var embedder = scope.ServiceProvider.GetRequiredService<IEmbedder>();
-            qvec = await embedder.EmbedTextAsync(query, ct);
-        }
-
-        // 2) query vectorial (cosine). Nota: score = 1 - distancia
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
+        // 1) Embed de la query (usa tu IEmbedder inyectado)
+        var qvec = await _embedder.EmbedTextAsync(query, ct);
 
-        // Construye SQL dinámico si hay tags
-        var sb = new StringBuilder(@"
-        SELECT c.id, c.document_id, c.text, (c.embedding <=> @q) AS dist, d.title
-        FROM kb_chunks c
-        JOIN kb_documents d ON d.id = c.document_id
-        WHERE c.tenant_slug = @t
-    ");
+        // 2) WHERE opcional para tags
+        string whereTags = "";
+        if (mustTags is { Length: > 0 })
+        {
+            // "all" => requiere TODAS las tags (d.tags @> @tags)
+            // "any" => basta intersección (d.tags && @tags)
+            bool requireAll = string.Equals(tagMatch, "all", StringComparison.OrdinalIgnoreCase);
+            whereTags = requireAll ? "AND d.tags @> @tags" : "AND d.tags && @tags";
+        }
 
-        var hasTags = mustTags is { Length: > 0 };
-        if (hasTags)
-            sb.Append(" AND d.tags && @tags ");
+        // 3) Consulta: ordenamos por distancia (embedding <=> @q); score = 1 - distancia
+        var sql = $@"
+SELECT
+    c.id         AS chunk_id,
+    d.id         AS document_id,
+    c.text,
+    1 - (c.embedding <=> @q) AS score,
+    d.title
+FROM kb_chunks c
+JOIN kb_documents d ON d.id = c.document_id
+WHERE d.tenant_slug = @t
+{whereTags}
+ORDER BY c.embedding <=> @q
+LIMIT @k;";
 
-        sb.Append(" ORDER BY c.embedding <=> @q LIMIT @k; ");
-        var sql = sb.ToString();
-
-        // Ejecuta consulta SQL con parámetros
         await using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.Parameters.AddWithValue("q", new Pgvector.Vector(qvec));     // vector
-        cmd.Parameters.AddWithValue("t", NpgsqlTypes.NpgsqlDbType.Text, tenant);
-        cmd.Parameters.AddWithValue("k", NpgsqlTypes.NpgsqlDbType.Integer, Math.Max(1, topK));
-        if (hasTags)
-            cmd.Parameters.AddWithValue("tags", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text, mustTags!);
+        cmd.Parameters.AddWithValue("t", NpgsqlDbType.Text, tenant);
+        cmd.Parameters.AddWithValue("k", NpgsqlDbType.Integer, topK);
+        cmd.Parameters.AddWithValue("q", new Vector(qvec)); // pgvector
 
-        var hits = new List<KbChunkHit>();
+        if (mustTags is { Length: > 0 })
+            cmd.Parameters.AddWithValue("tags", NpgsqlDbType.Array | NpgsqlDbType.Text, mustTags);
+
+        var hits = new List<KbChunkHit>(topK);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
-            var id = r.GetInt64(0);
-            var doc = r.GetInt64(1);
+            var chunkId = r.GetFieldValue<long>(0);
+            var documentId = r.GetFieldValue<long>(1);
             var text = r.GetString(2);
-            var dist = r.GetFloat(3);
-            var ti = r.IsDBNull(4) ? null : r.GetString(4);
+            var score = r.GetFloat(3);
+            var title = r.IsDBNull(4) ? null : r.GetString(4);
 
-            hits.Add(new KbChunkHit(
-                ChunkId: id,
-                DocumentId: doc,
-                Text: text,
-                Score: 1f - dist,   // cosine: 1 - distancia
-                Title: ti
-            ));
+            hits.Add(new KbChunkHit(chunkId, documentId, text, score, title));
         }
 
-        // Devuelve hits/chunks relevantes.
         return hits;
     }
 }

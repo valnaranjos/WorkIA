@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+namespace KommoAIAgent.Infrastructure.Services;
 /// <summary>
 /// Servicio de embedding usando OpenAI con caché en memoria (IMemoryCache).
 /// - Reusa OpenAiService para cliente y modelo.
