@@ -10,11 +10,12 @@ public sealed class KbController : ControllerBase
 {
     private readonly IKnowledgeStore _store;
     private readonly ITenantContext _tenant;
-
-    public KbController(IKnowledgeStore store, ITenantContext tenant)
+    private readonly ILogger<KbController> _logger;
+    public KbController(IKnowledgeStore store, ITenantContext tenant, ILogger<KbController> logger)
     {
         _store = store;
         _tenant = tenant;
+        _logger = logger;
     }
 
 
@@ -30,6 +31,76 @@ public sealed class KbController : ControllerBase
         var doc = await _store.UpsertDocumentAsync(_tenant.CurrentTenantId.Value, dto.SourceId, dto.Title, dto.Content, dto.Tags, ct);
         var chunks = await _store.RechunkAndEmbedAsync(_tenant.CurrentTenantId.Value, doc.DocumentId, ct);
         return Ok(new { doc.DocumentId, chunks });
+    }
+
+    /// <summary>
+    /// Ingesta en lote de documentos de texto en la base de conocimiento KB.
+    /// </summary>
+    /// <param name="items"></param>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    [HttpPost("ingest/batch")]
+    public async Task<IActionResult> IngestBatch([FromBody] List<KbIngestTextDto> items, CancellationToken ct = default)
+    {
+        if (items is null || items.Count == 0)
+            return BadRequest(new { error = "items is required and must contain at least 1 element" });
+
+        var tenant = _tenant.Config.Slug;
+        var results = new List<object>(items.Count);
+        int totalChunks = 0;
+
+        foreach (var dto in items)
+        {
+            // Validación mínima por item
+            if (string.IsNullOrWhiteSpace(dto.SourceId) || string.IsNullOrWhiteSpace(dto.Content))
+            {
+                results.Add(new
+                {
+                    dto.SourceId,
+                    error = "sourceId and content are required"
+                });
+                continue;
+            }
+
+            try
+            {
+                var doc = await _store.UpsertDocumentAsync(
+                    tenant,
+                    dto.SourceId,
+                    dto.Title,
+                    dto.Content,
+                    dto.Tags,
+                    ct);
+
+                // Re‐chunk + embed (usa batch interno; se beneficia del doble caché)
+                var chunks = await _store.RechunkAndEmbedAsync(tenant, doc.DocumentId, ct);
+                totalChunks += chunks;
+
+                results.Add(new
+                {
+                    dto.SourceId,
+                    documentId = doc.DocumentId,
+                    chunks
+                });
+            }
+            catch (Exception ex)
+            {
+                // No detiene el lote por 1 error; log para seguir.
+                _logger.LogError(ex, "Batch ingest error (tenant={Tenant}, sourceId={SourceId})", tenant, dto.SourceId);
+                results.Add(new
+                {
+                    dto.SourceId,
+                    error = ex.Message
+                });
+            }
+        }
+
+        return Ok(new
+        {
+            processed = items.Count,
+            totalChunks,
+            results
+        });
     }
 
 
