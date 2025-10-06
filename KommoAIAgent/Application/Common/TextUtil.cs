@@ -1,4 +1,6 @@
-﻿namespace KommoAIAgent.Application.Common
+﻿using System.Text;
+
+namespace KommoAIAgent.Application.Common
 {
     /// <summary>
     /// Helper para operaciones comunes con texto.
@@ -23,5 +25,42 @@
         /// <returns></returns>
         public static string Normalize(string? s) =>
               (s ?? "").Trim().ToLowerInvariant();
+    
+     /// <summary>
+    /// Canonicaliza texto para la clave del caché de embeddings:
+    /// - Unicode NFKC (para unificar caracteres equivalentes)
+    /// - Unifica saltos de línea
+    /// - Trim
+    /// - Colapsa espacios consecutivos en uno
+    /// - NO altera mayúsculas/minúsculas
+    /// </summary>
+    public static string NormalizeForEmbeddingKey(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+
+            // Unicode (combining marks, etc.)
+            var t = s.Normalize(NormalizationForm.FormKC);
+
+            // Unifica saltos de línea y recorta
+            t = t.Replace("\r\n", "\n").Replace("\r", "\n").Trim();
+
+            //Colapsa runs de whitespace a un solo espacio
+            var sb = new StringBuilder(t.Length);
+            bool prevSpace = false;
+            foreach (var ch in t)
+            {
+                if (char.IsWhiteSpace(ch))
+                {
+                    if (!prevSpace) sb.Append(' ');
+                    prevSpace = true;
+                }
+                else
+                {
+                    sb.Append(ch);
+                    prevSpace = false;
+                }
+            }
+            return sb.ToString();
+        }
     }
 }

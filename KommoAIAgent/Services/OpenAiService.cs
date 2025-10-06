@@ -1,12 +1,11 @@
-﻿using KommoAIAgent.Application.Common;
-using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Domain.Tenancy;
+﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI;
 using OpenAI.Chat;
 using OpenAI.Embeddings;
 using System.ClientModel;
 using System.Reflection;
+using System.Text.Json;
 
 namespace KommoAIAgent.Services;
 
@@ -289,10 +288,47 @@ public class OpenAiService : IAiService
         var cfg = _tenant.Config;
         var messages = new List<ChatMessage>();
 
+
+        // ========= Estilo/tono por defecto (overridable) =========
+        string tone = "profesional y cercano"; // p. ej.: "formal", "cálido y cercano", "juvenil"
+        bool useEmoji = false;                 // true = permite 1 emoji cuando sea natural
+        string language = "es";
+
+
+        // (Opcional) lee estos ajustes desde BusinessRules si existen como propiedades simples
+        try
+        {
+            if (cfg.BusinessRules is not null && cfg.BusinessRules.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                var root = cfg.BusinessRules.RootElement;
+                if (root.TryGetProperty("tone", out var t) && t.ValueKind == JsonValueKind.String)
+                    tone = t.GetString()!;
+                if (root.TryGetProperty("emoji", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    useEmoji = e.GetBoolean();
+                if (root.TryGetProperty("language", out var l) && l.ValueKind == JsonValueKind.String)
+                    language = l.GetString()!;
+            }
+        }
+        catch { /* ignorar: si no hay estas propiedades, seguimos con defaults */ }
+
         // 1) System prompt del tenant (con fallback seguro)
         var systemPrompt = string.IsNullOrWhiteSpace(cfg.OpenAI?.SystemPrompt)
-            ? "Eres un asistente virtual experto y amigable. Responde de forma concisa y profesional."
-            : cfg.OpenAI!.SystemPrompt!.Trim();
+            ? $@"
+Eres el asistente virtual de {cfg.DisplayName}.
+- Habla en {language} con un tono {tone}. {(useEmoji ? "Puedes usar como máximo 1 emoji cuando sea natural." : "No uses emojis.")}
+- Sé claro, conciso, amable y experto en el negocio.
+
+CUANDO HAYA CONTEXTO RAG:
+- Si existe un mensaje del sistema que comience con 'CONTEXT (RAG):', usa EXCLUSIVAMENTE ese contexto para responder.
+- Cita afirmaciones clave con [n] (n = índice del fragmento).
+- Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles; NUNCA inventes.
+
+REGLAS GENERALES:
+- No inventes URLs, políticas, precios ni datos que no estén en el CONTEXTO o en las REGLAS DE NEGOCIO.
+- Responde directo a la intención; usa listas breves (máximo 5 puntos) cuando ayuden.
+- Si citaste fragmentos, cierra con una línea: 'Fuentes:' listando [n] Título de cada fragmento citado.
+".Trim()
+        : cfg.OpenAI!.SystemPrompt!.Trim();
 
         messages.Add(ChatMessage.CreateSystemMessage(systemPrompt));
 
@@ -305,7 +341,7 @@ public class OpenAiService : IAiService
                 if (!string.IsNullOrWhiteSpace(rulesText))
                 {
                     messages.Add(ChatMessage.CreateSystemMessage(
-                        $"REGLAS DE NEGOCIO (síguelas estrictamente):\n{rulesText}"
+                        $"REGLAS DE NEGOCIO (síguelas estrictamente ; nunca las contradigas):\n{rulesText}"
                     ));
                 }
             }
