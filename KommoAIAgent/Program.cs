@@ -3,7 +3,6 @@ using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Infraestructure.Tenancy;
 using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Infrastructure.Persistence;
-using KommoAIAgent.Infrastructure.Services;
 using KommoAIAgent.Infrastructure.Tenancy;
 using KommoAIAgent.Knowledge;
 using KommoAIAgent.Knowledge.Sql;
@@ -87,9 +86,14 @@ builder.Services.AddSingleton<ITokenBudget, InMemoryPeriodicTokenBudget>();
 
 // RAG (fase 2: BD postgres + pgvector)
 builder.Services.AddScoped<IKnowledgeStore, PgVectorKnowledgeStore>();
-builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 //Servicio de caché de embeddings en PostgreSQL (pgvector)
 builder.Services.AddScoped<IEmbeddingCache, PostgresEmbeddingCache>();
+
+// Proveedor concreto (hoy OpenAI)
+builder.Services.AddScoped<IEmbeddingProvider, OpenAIEmbeddingProvider>();
+
+// Servicio de embeddings que usa doble caché (mem + DB) y el provider
+builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 
 
 //API Básica

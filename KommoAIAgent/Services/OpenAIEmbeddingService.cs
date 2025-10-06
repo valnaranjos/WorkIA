@@ -2,47 +2,45 @@
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Knowledge;
 using KommoAIAgent.Knowledge.Sql;
-using KommoAIAgent.Services;
 using Microsoft.Extensions.Caching.Memory;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace KommoAIAgent.Infrastructure.Services;
+namespace KommoAIAgent.Services;
 /// <summary>
-/// Servicio de embedding usando OpenAI con caché en memoria (IMemoryCache).
-/// - Reusa OpenAiService para cliente y modelo.
+/// Servicio de embedding con doble caché:
 /// IMemoryCache por tenant (como front-cache determinado por el TTL)
 /// DB (kb_embedding_cache), persistente por tenant. Para cargas grandes y persistencia.
 /// -Clave de caché: emb: { tenant}:{ model}:{ SHA256(texto_normalizado)}
 /// - No se guarda texto en caché, solo el vector. 
+/// /// Usa un <see cref="IEmbeddingProvider"/> para resolver el proveedor real (hoy: OpenAI).
 /// </summary>
 public sealed class OpenAIEmbeddingService : IEmbedder
 {
-    private readonly OpenAiService _openai;
+    //Listo para escalar a más proveedores si se desea.
+    private readonly IEmbeddingProvider _provider;
+
     private readonly ILogger<OpenAIEmbeddingService> _logger;
     private readonly IMemoryCache _cache;
     private readonly ITenantContext _tenant;
     private readonly IEmbeddingCache _dbCache;
-    //TTL del caché, configurable si se desea.
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(12);
 
-    // Dimensiones del embedding y modelo a usar, se puede configurar
-    public int Dimensions => 1536;
 
-    //Modelo de embedding a usar, recomendado text-embedding-3-small por coste y prestaciones
-    public string Model => "text-embedding-3-small";
+    // Dimensiones del embedding y modelo a usar, traídos del proveedor.
+    public int Dimensions => _provider.Dimensions;
 
-    // Por defecto, cacheado por tenant.
-    private readonly bool _cacheByTenant = true;
+    //Modelo de embedding a usar, traído del proveedor.
+    public string Model => _provider.Model;
 
-    public OpenAIEmbeddingService(OpenAiService openai,
+    public OpenAIEmbeddingService(
+        IEmbeddingProvider provider,
         IMemoryCache cache,
         ITenantContext tenant,
         IEmbeddingCache dbCache,
         ILogger<OpenAIEmbeddingService> log)
      {
-        _openai = openai;
+        _provider = provider;
         _cache = cache;
         _tenant = tenant;
         _dbCache = dbCache;
@@ -50,11 +48,13 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     }
     /// <summary>
     /// Embedding para un solo texto con caché (HIT/MISS transparente).
-    /// Memoria → DB → OpenAI. Guarda en DB y Memoria tras MISS.
+    /// Memoria → DB → Proveedor. Guarda en DB y Memoria tras MISS.
     /// </summary>
     public async Task<float[]> EmbedTextAsync(string text, CancellationToken ct = default)
     {
-        var key = CacheKey(Model, text);
+        
+        var provider = GetProvider();
+        var key = CacheKey(provider, Model, text);
         var slug = GetTenantSlug();
         var hash = ComputeTextHash(text);
         var ttl = GetCacheTtl();
@@ -67,7 +67,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         }
 
         // DB
-        var dbVec = await _dbCache.TryGetAsync(slug, Model, hash, ct);
+        var dbVec = await _dbCache.TryGetAsync(slug, provider, Model, hash, ct);
         if (dbVec is not null)
         {
             _logger.LogDebug("Emb cache HIT (db, single) tenant={Tenant}", slug);
@@ -75,12 +75,12 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             return dbVec;
         }
 
-        // OpenAI
-        var vec = await _openai.GetEmbeddingAsync(Model, text, ct);
-        _logger.LogDebug("Emb cache MISS (single) -> OpenAI, tenant={Tenant}", slug);
+        // Proveedor
+        var vec = await _provider.EmbedTextAsync(text, ct);
+        _logger.LogDebug("Emb cache MISS (single) -> Provider({Provider}, tenant={Tenant}", provider, slug);
 
         // Guardar DB + Memoria
-        await _dbCache.PutAsync(slug, Model, hash, vec, ct);
+        await _dbCache.PutAsync(slug, provider, Model, hash, vec, ct);
         _cache.Set(key, vec, ttl);
 
         return vec;
@@ -90,7 +90,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     /// Embeddings para lote:
     /// - Resuelve HITs en memoria
     /// - Intenta DB para los misses
-    /// - Pide a OpenAI SOLO los que AÚN faltan.
+    /// - Pide al proveedor SOLO los que AÚN faltan.
     /// Guarda cada MISS en DB y Memoria manteniendo el orden.
     /// </summary>
     public async Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
@@ -98,6 +98,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         if (texts is null || texts.Count == 0) return Array.Empty<float[]>();
 
         var slug = GetTenantSlug();
+        var provider = GetProvider();
         var ttl = GetCacheTtl();
 
         var result = new float[texts.Count][];
@@ -106,10 +107,11 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         var missIdx = new List<int>(texts.Count);  // faltantes tras memoria
         var missIdx2 = new List<int>(texts.Count);  // faltantes tras DB
 
+
         // Memoria
         for (int i = 0; i < texts.Count; i++)
         {
-            memKeys[i] = CacheKey(Model, texts[i]);
+            memKeys[i] = CacheKey(provider, Model, texts[i]);
             if (_cache.TryGetValue(memKeys[i], out float[]? vec) && vec is not null)
             {
                 result[i] = vec;
@@ -124,7 +126,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         // DB para los que faltan
         foreach (var i in missIdx)
         {
-            var dbVec = await _dbCache.TryGetAsync(slug, Model, hashes[i], ct);
+            var dbVec = await _dbCache.TryGetAsync(slug, provider, Model, hashes[i], ct);
             if (dbVec is not null)
             {
                 result[i] = dbVec;
@@ -136,13 +138,13 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             }
         }
 
-        // OpenAI solo para los que aún faltan
+        // Proveedor solo para los que aún faltan
         if (missIdx2.Count > 0)
         {
             var inputs = new List<string>(missIdx2.Count);
             foreach (var i in missIdx2) inputs.Add(texts[i]);
 
-            var missVecs = await _openai.GetEmbeddingsAsync(Model, inputs, ct);
+            var missVecs = await _provider.EmbedBatchAsync(inputs, ct);
             for (int j = 0; j < missIdx2.Count; j++)
             {
                 var i = missIdx2[j];
@@ -151,7 +153,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
                 result[i] = vec;
 
                 // Persistir y cachear
-                await _dbCache.PutAsync(slug, Model, hashes[i], vec, ct);
+                await _dbCache.PutAsync(slug, provider, Model, hashes[i], vec, ct);
                 _cache.Set(memKeys[i], vec, ttl);
             }
         }
@@ -168,17 +170,17 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     /// <summary>
     /// Obtiene la clave de caché para un texto y modelo dado.
     /// </summary>
-    /// <param name="model"></param>
+    /// <param name="provider">Proveedor de IA</param>
+    /// <param name="model">Modelo</param>
     /// <param name="text"></param>
     /// <returns></returns>
-    private string CacheKey(string model, string text)
+    private string CacheKey(string provider, string model, string text)
     {
+        var slug = GetTenantSlug();
         var norm = TextUtil.NormalizeForEmbeddingKey(text);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(norm)));
-
-        var slug = GetTenantSlug();
-
-        return $"emb:{slug}:{model}:{hash}";
+                
+        return $"emb:{slug}:{provider}:{model}:{hash}";
     }
 
 
@@ -217,10 +219,21 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         return string.IsNullOrWhiteSpace(slug) ? "unknown" : slug;
     }
 
+    /// <summary>
+    /// Computa el hash SHA256 en HEX (mayúsculas) del texto normalizado para uso en caché y DB.
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
     private static string ComputeTextHash(string text)
     {
         var canon = TextUtil.NormalizeForEmbeddingKey(text);
         var bytes = Encoding.UTF8.GetBytes(canon);
         return Convert.ToHexString(SHA256.HashData(bytes)); // HEX mayúsculas
     }
+
+    /// <summary>
+    /// Obtiene el proveedor actual.
+    /// </summary>
+    /// <returns></returns>
+    private string GetProvider() => _provider.ProviderId;
 }

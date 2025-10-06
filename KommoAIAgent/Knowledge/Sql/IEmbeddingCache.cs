@@ -5,26 +5,28 @@
     /// </summary>
     public interface IEmbeddingCache
     {
-        /// <summary>
-        /// Obtiene un embedding del caché si existe.
-        /// </summary>
-        /// <param name="tenantSlug"></param>
-        /// <param name="model"></param>
-        /// <param name="textHash"></param>
-        /// <param name="ct"></param>
-        /// <returns></returns>
-        Task<float[]?> TryGetAsync(string tenantSlug, string model, string textHash, CancellationToken ct = default);
+       /// <summary>
+       /// 
+       /// </summary>
+       /// <param name="tenantSlug">Slug del tenant</param>
+       /// <param name="provider">Proveedor de IA, listo para escalar en futuras versiones, configurado por tenant</param>
+       /// <param name="model"></param>
+       /// <param name="textHash"></param>
+       /// <param name="ct"></param>
+       /// <returns></returns>
+        Task<float[]?> TryGetAsync(string tenantSlug, string provider, string model, string textHash, CancellationToken ct = default);
 
 
         /// <summary>
-        /// Agrega un embedding al caché.
+        /// Agrega o actualiza un embedding en el caché.
         /// </summary>
-        /// <param name="tenantSlug"></param>
+        /// <param name="tenantSlug">Slug del tenant</param>
+        /// <param name="provider">Proveedor de IA, listo para escalar en futuras versiones, configurado por tenant</param>
         /// <param name="model"></param>
         /// <param name="textHash"></param>
         /// <param name="vector"></param>
         /// <param name="ct"></param>
         /// <returns></returns>
-        Task PutAsync(string tenantSlug, string model, string textHash, float[] vector, CancellationToken ct = default);
+        Task PutAsync(string tenantSlug, string provider, string model, string textHash, float[] vector, CancellationToken ct = default);
     }
 }
