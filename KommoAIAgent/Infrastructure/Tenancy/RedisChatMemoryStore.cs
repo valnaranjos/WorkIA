@@ -1,9 +1,8 @@
-﻿using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Services.Interfaces;
+﻿using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
-namespace KommoAIAgent.Infraestructure.Tenancy
+namespace KommoAIAgent.Infrastructure.Tenancy
 {
     public sealed class RedisChatMemoryStore : IChatMemoryStore
     {
