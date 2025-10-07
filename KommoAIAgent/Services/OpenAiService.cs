@@ -262,7 +262,8 @@ public class OpenAiService : IAiService
         // Usa el modelo del tenant si no se especifica otro
         var selectedModel = model ?? cfg.OpenAI?.Model ?? "gpt-4o-mini";
 
-        var chatClient = _client.GetChatClient(selectedModel);
+        var client = EnsureClient();
+        var chatClient = client.GetChatClient(selectedModel);
 
         var options = new ChatCompletionOptions
         {
