@@ -1,4 +1,7 @@
-﻿using KommoAIAgent.Services;
+﻿using KommoAIAgent.Application.Tenancy;
+using KommoAIAgent.Services;
+using KommoAIAgent.Services.Interfaces;
+using OpenAI.Embeddings;
 
 namespace KommoAIAgent.Knowledge
 {

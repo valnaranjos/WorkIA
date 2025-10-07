@@ -181,31 +181,35 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
-        // 1) Embed de la query (usa tu IEmbedder inyectado)
+        // Embed de la query (usa tu IEmbedder inyectado)
         var qvec = await _embedder.EmbedTextAsync(query, ct);
 
-        // 2) WHERE opcional para tags
-        string whereTags = "";
+        // WHERE opcional para tags
+
+        const string baseWhere = "WHERE d.tenant_slug = @t";
+        string tagsWhere = "";
+
         if (mustTags is { Length: > 0 })
         {
             // "all" => requiere TODAS las tags (d.tags @> @tags)
             // "any" => basta intersección (d.tags && @tags)
             bool requireAll = string.Equals(tagMatch, "all", StringComparison.OrdinalIgnoreCase);
-            whereTags = requireAll ? "AND d.tags @> @tags" : "AND d.tags && @tags";
+            tagsWhere = requireAll
+                ? " AND d.tags @> @tags"
+                : " AND d.tags && @tags";
         }
 
         // 3) Consulta: ordenamos por distancia (embedding <=> @q); score = 1 - distancia
         var sql = $@"
 SELECT
-    c.id         AS chunk_id,
-    d.id         AS document_id,
+    c.id AS chunk_id,
+    d.id AS document_id,
     c.text,
     1 - (c.embedding <=> @q) AS score,
     d.title
 FROM kb_chunks c
 JOIN kb_documents d ON d.id = c.document_id
-WHERE d.tenant_slug = @t
-{whereTags}
+{baseWhere}{tagsWhere}
 ORDER BY c.embedding <=> @q
 LIMIT @k;";
 

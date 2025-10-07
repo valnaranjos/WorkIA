@@ -2,6 +2,7 @@
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Knowledge;
 using KommoAIAgent.Knowledge.Sql;
+using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using System.Security.Cryptography;
 using System.Text;
@@ -25,6 +26,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     private readonly IMemoryCache _cache;
     private readonly ITenantContext _tenant;
     private readonly IEmbeddingCache _dbCache;
+    private readonly IAIUsageTracker _usage;
 
 
     // Dimensiones del embedding y modelo a usar, traídos del proveedor.
@@ -38,6 +40,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         IMemoryCache cache,
         ITenantContext tenant,
         IEmbeddingCache dbCache,
+        IAIUsageTracker usage,
         ILogger<OpenAIEmbeddingService> log)
      {
         _provider = provider;
@@ -45,6 +48,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         _tenant = tenant;
         _dbCache = dbCache;
         _logger = log;
+        _usage = usage;
     }
     /// <summary>
     /// Embedding para un solo texto con caché (HIT/MISS transparente).
@@ -53,11 +57,11 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     public async Task<float[]> EmbedTextAsync(string text, CancellationToken ct = default)
     {
         
-        var provider = GetProvider();
+        var provider = AiUtil.ProviderId(_tenant.Config);
         var key = CacheKey(provider, Model, text);
-        var slug = GetTenantSlug();
+        var slug = AiUtil.TenantSlug(_tenant);
         var hash = ComputeTextHash(text);
-        var ttl = GetCacheTtl();
+        var ttl = AiUtil.GetCacheTtl(_tenant.Config);
 
         // Memoria
         if (_cache.TryGetValue(key, out float[] cached) && cached is not null)
@@ -76,12 +80,41 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         }
 
         // Proveedor
-        var vec = await _provider.EmbedTextAsync(text, ct);
-        _logger.LogDebug("Emb cache MISS (single) -> Provider({Provider}, tenant={Tenant}", provider, slug);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(15)); // ← TIMEOUT DEFENSIVO
+
+        float[] vec;
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+            _logger.LogInformation("Embeddings -> provider (single) tenant={Tenant}", slug);
+            vec = await _provider.EmbedTextAsync(text, linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("Embedding cancelado por request (tenant={Tenant})", slug);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Timeout al pedir embedding (tenant={Tenant})", slug);
+            throw new TimeoutException($"Embedding timeout después de 15s (tenant={slug})");
+        }
 
         // Guardar DB + Memoria
         await _dbCache.PutAsync(slug, provider, Model, hash, vec, ct);
         _cache.Set(key, vec, ttl);
+
+        // MÉTRICA: solo MISS real
+        await _usage.TrackEmbeddingAsync(
+            tenant: slug,
+            provider: provider,
+            model: Model,
+            charCount: text?.Length ?? 0,
+            estCostUsd: null,
+            ct);
 
         return vec;
     }
@@ -97,13 +130,15 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     {
         if (texts is null || texts.Count == 0) return Array.Empty<float[]>();
 
-        var slug = GetTenantSlug();
-        var provider = GetProvider();
-        var ttl = GetCacheTtl();
+        var slug = AiUtil.TenantSlug(_tenant);
+        var provider = AiUtil.ProviderId(_tenant.Config);
+        var ttl = AiUtil.GetCacheTtl(_tenant.Config);
+
 
         var result = new float[texts.Count][];
         var memKeys = new string[texts.Count];
         var hashes = new string[texts.Count];
+
         var missIdx = new List<int>(texts.Count);  // faltantes tras memoria
         var missIdx2 = new List<int>(texts.Count);  // faltantes tras DB
 
@@ -144,7 +179,33 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             var inputs = new List<string>(missIdx2.Count);
             foreach (var i in missIdx2) inputs.Add(texts[i]);
 
-            var missVecs = await _provider.EmbedBatchAsync(inputs, ct);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(20)); // timeout defensivo
+
+            float[][] missVecs;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+                _logger.LogInformation("Embeddings -> provider (batch) tenant={Tenant} misses={Count}",
+                    slug, missIdx2.Count);
+                missVecs = await _provider.EmbedBatchAsync(inputs, linkedCts.Token);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                _logger.LogWarning("Batch embedding cancelado (tenant={Tenant})", slug);
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("Timeout en batch embedding (tenant={Tenant}, count={Count})",
+                    slug, missIdx2.Count);
+                throw new TimeoutException($"Batch embedding timeout (tenant={slug}, {missIdx2.Count} items)");
+            }
+            // ==============================
+            //Guardar y cachear
+
             for (int j = 0; j < missIdx2.Count; j++)
             {
                 var i = missIdx2[j];
@@ -156,15 +217,16 @@ public sealed class OpenAIEmbeddingService : IEmbedder
                 await _dbCache.PutAsync(slug, provider, Model, hashes[i], vec, ct);
                 _cache.Set(memKeys[i], vec, ttl);
             }
+
+            // Métrica: SOLO de los MISS
+            var chars = 0;
+            foreach (var s in inputs) chars += s?.Length ?? 0;
+
+            await _usage.TrackEmbeddingAsync(slug, provider, Model, chars, null, ct);
         }
 
-        _logger.LogDebug("Emb batch resuelto: memHits={MemHits} dbHits={DbHits} openaiMisses={Ai}",
-            texts.Count - missIdx.Count,
-            missIdx.Count - missIdx2.Count,
-            missIdx2.Count);
-
-        return result;
-    }
+            return result;
+        }
 
 
     /// <summary>
@@ -176,49 +238,14 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     /// <returns></returns>
     private string CacheKey(string provider, string model, string text)
     {
-        var slug = GetTenantSlug();
+        var slug = AiUtil.TenantSlug(_tenant);
         var norm = TextUtil.NormalizeForEmbeddingKey(text);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(norm)));
                 
         return $"emb:{slug}:{provider}:{model}:{hash}";
     }
 
-
-    /// <summary>
-    /// Obtiene el TTL de caché desde configuración de business rules del tenant. como (embeddingCacheTtlHours)
-    /// </summary>
-    /// <returns></returns>
-    private TimeSpan GetCacheTtl()
-    {
-        try
-        {
-            var br = _tenant.Config?.BusinessRules;
-            if (br is not null && br.RootElement.ValueKind == JsonValueKind.Object &&
-                br.RootElement.TryGetProperty("embeddingCacheTtlHours", out var v) &&
-                v.TryGetInt32(out var hours))
-            {
-                // clamp de seguridad: 1h–168h (7d)
-                hours = Math.Clamp(hours, 1, 168);
-                return TimeSpan.FromHours(hours);
-            }
-        }
-        catch { /* ignoramos; fallback abajo */ }
-
-        // Default global sensato a 48HRS.
-        return TimeSpan.FromHours(48);
-    }
-
-    /// <summary>
-    /// Obtiene el slug del tenant o "unknown" si no está disponible, para uso en logs.
-    /// </summary>
-    /// <returns></returns>
-    private string GetTenantSlug()
-    {
-        var slug = _tenant.Config?.Slug;
-        if (string.IsNullOrWhiteSpace(slug)) slug = _tenant.CurrentTenantId.Value;
-        return string.IsNullOrWhiteSpace(slug) ? "unknown" : slug;
-    }
-
+   
     /// <summary>
     /// Computa el hash SHA256 en HEX (mayúsculas) del texto normalizado para uso en caché y DB.
     /// </summary>
@@ -231,9 +258,4 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         return Convert.ToHexString(SHA256.HashData(bytes)); // HEX mayúsculas
     }
 
-    /// <summary>
-    /// Obtiene el proveedor actual.
-    /// </summary>
-    /// <returns></returns>
-    private string GetProvider() => _provider.ProviderId;
 }

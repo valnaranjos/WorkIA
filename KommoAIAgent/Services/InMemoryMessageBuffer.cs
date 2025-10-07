@@ -10,19 +10,68 @@ namespace KommoAIAgent.Services
     /// </summary>
     internal sealed class InMemoryMessageBuffer : IMessageBuffer
     {
-        private class State
+        private sealed class State : IDisposable
         {
             public readonly List<string> Texts = [];
             public readonly List<AttachmentInfo> Attachments = [];
             public DateTimeOffset FirstTs;
             public DateTimeOffset LastTs;
             public CancellationTokenSource? Cts; // para reprogramar el flush
+
+            private Timer? _timer;
+            private readonly object _lock = new();
+            private bool _disposed;
+
+            public void ScheduleFlush(TimeSpan delay, Func<Task> callback)
+            {
+                lock (_lock)
+                {
+                    if (_disposed) return;
+
+                    _timer?.Dispose();
+
+                    if (delay == TimeSpan.Zero)
+                    {
+                        // Flush inmediato en ThreadPool
+                        _ = Task.Run(callback);
+                    }
+                    else
+                    {
+                        _timer = new Timer(async _ =>
+                        {
+                            try { await callback(); }
+                            catch { /* ya logueado en el callback */ }
+                        }, null, delay, Timeout.InfiniteTimeSpan);
+                    }
+                }
+            }
+
+            public void CancelFlush()
+            {
+                lock (_lock)
+                {
+                    _timer?.Dispose();
+                    _timer = null;
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_lock)
+                {
+                    if (_disposed) return;
+                    _disposed = true;
+                    _timer?.Dispose();
+                    _timer = null;
+                }
+            }
         }
 
         private readonly ConcurrentDictionary<long, State> _states = new();
         private readonly ILogger<InMemoryMessageBuffer> _logger;
         private readonly TimeSpan _window;
         private readonly TimeSpan _maxBurst;
+        private bool _disposed;
 
 
         public InMemoryMessageBuffer(IConfiguration cfg, ILogger<InMemoryMessageBuffer> logger)
@@ -53,14 +102,15 @@ namespace KommoAIAgent.Services
             CancellationToken ct = default)
         {
             var state = _states.GetOrAdd(leadId, _ => new State());
-            bool flushNow = false;
-            AggregatedMessage? aggregateToSend = null;
+
+            AggregatedMessage? messageToFlush = null;
+            TimeSpan flushDelay;
 
             lock (state) // protege contra carreras por lead
             {
                 var now = DateTimeOffset.UtcNow;
 
-                if (state.Texts.Count == 0)
+                if (state.Texts.Count == 0 && state.Attachments.Count == 0)
                     state.FirstTs = now;
 
                 // Acumula texto si trae algo útil
@@ -79,10 +129,13 @@ namespace KommoAIAgent.Services
 
                 state.LastTs = now;
 
+                bool flushNow = false;
+
                 // Regla: si llega IMAGEN -> flush inmediato
                 if (state.Attachments.Any(AttachmentHelper.IsImage))
                 {
                     flushNow = true;
+                    _logger.LogDebug("Flush inmediato por imagen (lead={LeadId})", leadId);
                 }
                 else
                 {
@@ -90,6 +143,9 @@ namespace KommoAIAgent.Services
                     var burstAge = now - state.FirstTs;
                     if (burstAge >= _maxBurst)
                         flushNow = true;
+                    _logger.LogDebug("Flush inmediato por MaxBurst (lead={LeadId}, age={Age}ms)",
+                     leadId, burstAge.TotalMilliseconds);
+
                 }
 
                 // Cancelar temporizador anterior y programar nuevo
@@ -100,10 +156,10 @@ namespace KommoAIAgent.Services
                 var delay = flushNow ? TimeSpan.Zero : _window;
 
                 // Prepara aggregate (copia defensiva) para el callback
-                aggregateToSend = new AggregatedMessage(
-                    Text: string.Join(" ", state.Texts).Trim(),
-                    Attachments: [.. state.Attachments]
-                );
+                messageToFlush = new AggregatedMessage(
+                   Text: string.Join(" ", state.Texts).Trim(),
+                   Attachments: state.Attachments.ToList() // copia defensiva
+               );
 
                 // Si flush inmediato, limpia ya el estado; si no, se limpia al disparar
                 if (flushNow)
@@ -113,45 +169,44 @@ namespace KommoAIAgent.Services
                     state.FirstTs = state.LastTs = default;
                 }
 
-                // Lanza tarea de flush (0ms o ventana)
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await Task.Delay(delay, state.Cts.Token);
-                        // Si el delay expiró sin cancelación y NO era flush inmediato,
-                        // necesitamos tomar snapshot y limpiar aquí.
-                        if (!flushNow)
-                        {
-                            AggregatedMessage aggregate;
-                            lock (state)
-                            {
-                                aggregate = new AggregatedMessage(
-                                    Text: string.Join(" ", state.Texts).Trim(),
-                                    Attachments: state.Attachments.ToList()
-                                );
-                                state.Texts.Clear();
-                                state.Attachments.Clear();
-                                state.FirstTs = state.LastTs = default;
-                            }
-                            await onFlush(leadId, aggregate);
-                        }
-                        else
-                        {
-                            // flushNow: ya snapshotteado y limpiado; usa aggregate preparado
-                            await onFlush(leadId, aggregateToSend!);
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // reprogramación
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error al hacer flush del buffer (LeadId={LeadId})", leadId);
-                    }
-                }, CancellationToken.None);
+                flushDelay = flushNow ? TimeSpan.Zero : _window;
             }
+
+            // Programar flush FUERA del lock
+            state.ScheduleFlush(flushDelay, async () =>
+            {
+                AggregatedMessage finalMessage;
+
+                // Si NO fue flush inmediato, tomar nuevo snapshot ahora
+                if (flushDelay > TimeSpan.Zero)
+                {
+                    lock (state)
+                    {
+                        finalMessage = new AggregatedMessage(
+                            Text: string.Join(" ", state.Texts).Trim(),
+                            Attachments: state.Attachments.ToList()
+                        );
+                        state.Texts.Clear();
+                        state.Attachments.Clear();
+                        state.FirstTs = state.LastTs = default;
+                    }
+                }
+                else
+                {
+                    // Flush inmediato: usar el snapshot que ya preparamos
+                    finalMessage = messageToFlush!;
+                }
+
+                // Ejecutar callback
+                try
+                {
+                    await onFlush(leadId, finalMessage);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error al ejecutar flush (leadId={LeadId})", leadId);
+                }
+            });
 
             await Task.CompletedTask;
         }
@@ -165,20 +220,20 @@ namespace KommoAIAgent.Services
         {
             if (_states.TryRemove(leadId, out var state))
             {
-                lock (state)
-                {
-                    // Si usara Timer para el flush diferido:
-                    //state.Timer?.Change(Timeout.Infinite, Timeout.Infinite);
-                    //state.Timer?.Dispose();
-
-                    //Pero usé CancellationTokenSource para el delay:
-                    state.Cts?.Cancel();
-                    state.Cts?.Dispose();
-
-                    state.Texts.Clear();
-                    state.Attachments.Clear();
-                }
+                state.Dispose();
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            foreach (var kvp in _states)
+            {
+                kvp.Value.Dispose();
+            }
+            _states.Clear();
         }
     }
 }

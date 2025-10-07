@@ -1,6 +1,5 @@
 using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Infraestructure.Tenancy;
 using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Infrastructure.Persistence;
 using KommoAIAgent.Infrastructure.Tenancy;
@@ -20,11 +19,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<MultiTenancyOptions>(
     builder.Configuration.GetSection("MultiTenancy"));
 
+builder.Services.AddSingleton<TenantContextAccessor>();
+builder.Services.AddSingleton<ITenantContextAccessor>(sp => sp.GetRequiredService<TenantContextAccessor>());
+builder.Services.AddSingleton<ITenantContext>(sp => sp.GetRequiredService<TenantContextAccessor>());
+
+
 builder.Services.AddSingleton<ITenantResolver, TenantResolver>();
 builder.Services.AddSingleton<ITenantConfigProvider, DbTenantConfigProvider>();
-builder.Services.AddSingleton<ITenantContextAccessor, TenantContextAccessor>();
-builder.Services.AddScoped<ITenantContext>(sp =>
-    sp.GetRequiredService<ITenantContextAccessor>().Current);
+
 
 // -------------------- EF Core / PostgreSQL --------------------
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
@@ -95,6 +97,8 @@ builder.Services.AddScoped<IEmbeddingProvider, OpenAIEmbeddingProvider>();
 // Servicio de embeddings que usa doble caché (mem + DB) y el provider
 builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 
+// Servicio de tracking de uso de IA en PostgreSQL
+builder.Services.AddScoped<IAIUsageTracker, PostgresAIUsageTracker>();
 
 //API Básica
 builder.Services.AddControllers();
@@ -113,6 +117,14 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.Use(async (ctx, next) =>
+{
+    var th = ctx.Request.Headers["X-Tenant-Slug"].ToString();
+    var tq = ctx.Request.Query["tenant"].ToString();
+    Console.WriteLine($"--> {ctx.Request.Method} {ctx.Request.Path} tenant(h)={th} tenant(q)={tq}");
+    await next();
+    Console.WriteLine($"<-- {ctx.Response.StatusCode} {ctx.Request.Path}");
+});
 
 // -------------------- Endpoints --------------------
 

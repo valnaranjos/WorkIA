@@ -105,15 +105,23 @@ namespace KommoAIAgent.Services
                 leadId, userMessage, attachmentCount
             );
 
-            // Enviar al buffer (que agrupa por LeadId y espera un tiempo antes de llamar al orquestador)
-            await _msgBuffer.OfferAsync(
-                leadId,
-                userMessage,
-                messageDetails.Attachments ?? new List<AttachmentInfo>(),
-                async (id, agg) => await ProcessAggregatedTurnAsync(id, agg.Text, agg.Attachments)
-            );
-
-            return;
+            // Fire-and-forget CON manejo de errores
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _msgBuffer.OfferAsync(
+                        leadId,
+                        userMessage,
+                        messageDetails.Attachments ?? new List<AttachmentInfo>(),
+                        async (id, agg) => await ProcessAggregatedTurnAsync(id, agg.Text, agg.Attachments)
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error al encolar mensaje en buffer (lead={LeadId})", leadId);
+                }
+            });
         }
 
         /// <summary>

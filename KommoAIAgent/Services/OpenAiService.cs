@@ -1,4 +1,5 @@
-﻿using KommoAIAgent.Application.Tenancy;
+﻿using KommoAIAgent.Application.Common;
+using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using OpenAI;
 using OpenAI.Chat;
@@ -15,13 +16,18 @@ namespace KommoAIAgent.Services;
 /// - Retry automático en 429/503 con backoff exponencial.
 /// - Soporta texto simple, análisis de imágenes (URL y bytes) e historial conversacional.
 /// - Soporta generación de embeddings para vectores.
+/// - Tracking de tokens con fallback de estimación
 /// </summary>
 public class OpenAiService : IAiService
 {
-    private readonly OpenAIClient _client;
+    private OpenAIClient? _client;
     private readonly ILogger<OpenAiService> _logger;
     private readonly ITenantContext _tenant;
     private readonly IAiCredentialProvider _keys;
+    private readonly IAIUsageTracker _usage;
+
+    private string? _cachedApiKey; // cache de ApiKey por tenant
+    private readonly object _clientLock = new(); // lock para recreación del cliente
 
     //Estándar de embedding pequeño y rápido
     private const string DefaultEmbeddingModel = "text-embedding-3-small";
@@ -30,12 +36,15 @@ public class OpenAiService : IAiService
     // El constructor recibe IConfiguration para poder leer la ApiKey desde appsettings.json
     public OpenAiService(ITenantContext tenant,
         ILogger<OpenAiService> logger,
-        IAiCredentialProvider keys)
+        IAiCredentialProvider keys,
+        IAIUsageTracker usage)
     {
         _logger = logger;
         _tenant = tenant;
         _keys = keys;
+        _usage = usage;
 
+        /*
         // Validación: el tenant debe estar resuelto
         if (string.IsNullOrWhiteSpace(_tenant.CurrentTenantId.Value))
             throw new InvalidOperationException("TenantId no puede estar vacío");
@@ -49,7 +58,7 @@ public class OpenAiService : IAiService
         _client = new OpenAIClient(apiKey);
 
         _logger.LogInformation("OpenAiService inicializado para tenant={Tenant}",
-        _tenant.CurrentTenantId.Value);
+        _tenant.CurrentTenantId.Value);*/
     }
 
     /// <summary>
@@ -59,20 +68,20 @@ public class OpenAiService : IAiService
     /// </summary>
     public async Task<string> GenerateContextualResponseAsync(string textPrompt, CancellationToken ct = default)
     {
-        var cfg = _tenant.Config;
-        var model = cfg.OpenAI?.Model ?? "gpt-4o-mini";
-        var maxTokens = cfg.OpenAI?.MaxTokens ?? 400;
+        var client = EnsureClient();
+        var model = _tenant.Config?.OpenAI?.Model ?? "gpt-4o-mini";
+        var maxTokens = _tenant.Config?.OpenAI?.MaxTokens ?? 400;
 
         //Usa el helper centralizado
         var messages = BuildSystemMessages();
         messages.Add(ChatMessage.CreateUserMessage(textPrompt ?? string.Empty));
 
-        var chatClient = _client.GetChatClient(model);
+        var chatClient = client.GetChatClient(model);
         var options = new ChatCompletionOptions
         {
             MaxOutputTokenCount = maxTokens,
-            Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f),
-            TopP = (float)(cfg.OpenAI?.TopP ?? 1.0f)
+            Temperature = (float)(_tenant.Config?.OpenAI?.Temperature ?? 0.7f),
+            TopP = (float)(_tenant.Config?.OpenAI?.TopP ?? 1.0f)
         };
 
         var completion = await CallWithRetryAsync(
@@ -81,7 +90,17 @@ public class OpenAiService : IAiService
             ct
         );
 
-        return completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+        var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+
+        // MÉTRICAS (chat): usa AiUtil para DRY
+        await TrackChatUsageAsync(
+            textPrompt ?? string.Empty,
+            assistantText,
+            completion?.Usage?.InputTokenCount,
+            completion?.Usage?.OutputTokenCount,
+            ct);
+
+        return assistantText;
     }
 
 
@@ -135,6 +154,14 @@ public class OpenAiService : IAiService
             var aiText = completion?.Content?.FirstOrDefault()?.Text
                 ?? "No pude extraer información de la imagen.";
 
+            // MÉTRICAS (chat con visión): prompt + respuesta
+            await TrackChatUsageAsync(
+                textPrompt ?? string.Empty,
+                aiText,
+                completion?.Usage?.InputTokenCount,
+                completion?.Usage?.OutputTokenCount,
+                CancellationToken.None);
+
             _logger.LogInformation("OpenAI Vision BYTES OK (tenant={Tenant})", _tenant.CurrentTenantId);
             return aiText;
         }
@@ -145,29 +172,7 @@ public class OpenAiService : IAiService
         }
     }
 
-    /// <summary>
-    /// Envía un "ping" mensaje al cliente chat IA y determina si la respuesta fue recibida.
-    /// </summary>    
-    /// <see langword="false"/>.</remarks>
-    /// <returns><see langword="true"/>
-    public async Task<bool> PingAsync()
-    {
-        try
-        {
-            var model = _tenant.Config.OpenAI.Model ?? "gpt-4o-mini";
-            var chat = _client.GetChatClient(model);
-            var res = await chat.CompleteChatAsync(new[] { ChatMessage.CreateUserMessage("ping") },
-            new ChatCompletionOptions { MaxOutputTokenCount = 3 });
-
-            // Si obtenemos cualquier contenido, consideramos que está OK.
-            return res.Value.Content?.Any() == true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
+   
 
     /// <summary>
     /// Helper para retry: 3 intentos en 429/503 o error de red.
@@ -262,7 +267,7 @@ public class OpenAiService : IAiService
         var options = new ChatCompletionOptions
         {
             MaxOutputTokenCount = maxTokens,
-            Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f), 
+            Temperature = (float)(cfg.OpenAI?.Temperature ?? 0.7f),
             TopP = (float)(cfg.OpenAI?.TopP ?? 1.0f)
         };
 
@@ -276,7 +281,19 @@ public class OpenAiService : IAiService
             ct
         );
 
-        return completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+        var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+
+        // Si el SDK no trae Usage, el helper estimará tokens por longitud.
+        // Como aquí no tenemos un único "prompt", pasamos string.Empty;
+        // si quieres, podemos reconstruir el texto del usuario más adelante.
+        await TrackChatUsageAsync(
+            string.Empty,
+            assistantText,
+            completion?.Usage?.InputTokenCount,
+            completion?.Usage?.OutputTokenCount,
+            ct);
+
+        return assistantText;
     }
 
     /// <summary>
@@ -311,7 +328,7 @@ public class OpenAiService : IAiService
         }
         catch { /* ignorar: si no hay estas propiedades, seguimos con defaults */ }
 
-        // 1) System prompt del tenant (con fallback seguro)
+        // System prompt del tenant (con fallback seguro)
         var systemPrompt = string.IsNullOrWhiteSpace(cfg.OpenAI?.SystemPrompt)
             ? $@"
 Eres el asistente virtual de {cfg.DisplayName}.
@@ -332,7 +349,7 @@ REGLAS GENERALES:
 
         messages.Add(ChatMessage.CreateSystemMessage(systemPrompt));
 
-        // 2) Business rules del tenant (si existen)
+        // Business rules del tenant (si existen)
         if (cfg.BusinessRules is not null)
         {
             try
@@ -365,8 +382,8 @@ REGLAS GENERALES:
     /// <returns></returns>
     public async Task<float[]> GetEmbeddingAsync(string? model, string text, CancellationToken ct = default)
     {
-        var vectors = await GetEmbeddingsAsync(model, new[] { text }, ct);
-        return vectors[0];
+        var vectors = await GetEmbeddingsAsync(model, [text], ct);
+        return vectors.Length > 0 ? vectors[0] : Array.Empty<float>();
     }
 
     /// <summary>
@@ -382,24 +399,26 @@ REGLAS GENERALES:
         if (texts == null || texts.Count == 0)
             return Array.Empty<float[]>();
 
-        var m = string.IsNullOrWhiteSpace(model) ? DefaultEmbeddingModel : model;
+        var m = string.IsNullOrWhiteSpace(model) ? "text-embedding-3-small" : model;
 
         // Reusamos el proveedor de credenciales (igual que para chat)
         var apiKey = _keys.GetApiKey(_tenant.Config);
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("OpenAI API key not found for tenant.");
 
-        //Crea un cliente temporal de embeddings
+        // Crea un cliente temporal de embeddings SDK 2.4.0 DE OPENAI
         var embClient = new EmbeddingClient(m, apiKey);
 
         // Fallback universal: 1 request por texto
         var tasks = texts.Select(t => embClient.GenerateEmbeddingAsync(input: t, cancellationToken: ct)).ToArray();
         var responses = await Task.WhenAll(tasks);
 
-        //Delegamos la extracción del vector a un método aparte
+        // Delegamos la extracción del vector a un método aparte
         var result = new float[responses.Length][];
         for (int i = 0; i < responses.Length; i++)
+        {
             result[i] = ExtractEmbeddingVector(responses[i].Value);
+        }
         return result;
     }
 
@@ -414,7 +433,7 @@ REGLAS GENERALES:
     /// <exception cref="InvalidOperationException"></exception>
     private static float[] ExtractEmbeddingVector(object embeddingObj)
     {
-        if (embeddingObj is null) return Array.Empty<float>();
+        if (embeddingObj is null) return [];
 
         var t = embeddingObj.GetType();
 
@@ -484,7 +503,7 @@ REGLAS GENERALES:
             case Memory<float> mem: return mem.ToArray(); // ya es Memory<float>
             case IEnumerable<float> ef: return ef.ToArray(); // ya es IEnumerable<float>
             case IEnumerable<double> ed: return ed.Select(x => (float)x).ToArray(); // es IEnumerable<double>, convertimos a float
-            case System.Collections.IEnumerable ie: 
+            case System.Collections.IEnumerable ie:
                 {
                     var list = new List<float>();
                     //Para cada elemento, intentamos convertir a float
@@ -499,4 +518,92 @@ REGLAS GENERALES:
             default: return null;
         }
     }
+
+    private async Task TrackChatUsageAsync(
+        string promptText, 
+        string answerText, 
+        int? inputTokensFromSdk, 
+        int? outputTokensFromSdk, 
+        CancellationToken ct)
+    {
+        var inTok = inputTokensFromSdk ?? AiUtil.EstimateTokens(promptText);
+        var outTok = outputTokensFromSdk ?? AiUtil.EstimateTokens(answerText);
+
+        if (inTok <= 0 && outTok <= 0) return;
+
+        var tenant = AiUtil.TenantSlug(_tenant);
+        var provider = AiUtil.ProviderId(_tenant.Config);
+        var model = AiUtil.ChatModelId(_tenant.Config);
+
+        try
+        {
+            await _usage.TrackChatAsync(tenant, provider, model, inTok, outTok, estCostUsd: null, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "No se pudo registrar métricas de chat (tenant={Tenant}, model={Model})",
+                tenant, model);
+        }
+    }
+
+    private OpenAIClient EnsureClient()
+    {
+        var slug = _tenant.Config?.Slug ?? _tenant.CurrentTenantId.Value;
+        if (string.IsNullOrWhiteSpace(slug))
+            throw new InvalidOperationException("Tenant no resuelto para esta petición (falta middleware o header X-Tenant-Slug).");
+
+        var apiKey = _keys.GetApiKey(_tenant.Config);
+        if (string.IsNullOrWhiteSpace(apiKey))
+            throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{slug}'.");
+        if (_client is null || !string.Equals(apiKey, _cachedApiKey, StringComparison.Ordinal))
+        {
+            lock (_clientLock)
+            {
+                // Re-check dentro del lock
+                if (_client is null || !string.Equals(apiKey, _cachedApiKey, StringComparison.Ordinal))
+                {
+                    _cachedApiKey = apiKey;
+                    _client = new OpenAIClient(apiKey);
+                    _logger.LogInformation(
+                        "OpenAiService: cliente (re)creado para tenant={Tenant}", slug);
+                }
+            }
+        }
+        return _client;
+    }
+
+
+    /// <summary>
+    /// Envía un "ping" mensaje al cliente chat IA y determina si la respuesta fue recibida.
+    /// </summary>    
+    /// <see langword="false"/>.</remarks>
+    /// <returns><see langword="true"/>
+    public async Task<bool> PingAsync()
+    {
+        try
+        {
+            var client = EnsureClient();
+
+            var model = _tenant.Config?.OpenAI?.Model ?? "gpt-4o-mini";
+
+            // ✅ usa siempre chatClient (coherente con el resto del archivo)
+            var chatClient = client.GetChatClient(model);
+
+            var resp = await chatClient.CompleteChatAsync(
+                [ChatMessage.CreateUserMessage("ping")],
+                new ChatCompletionOptions { MaxOutputTokenCount = 1 }
+            );
+
+            var comp = resp.Value;
+
+            return comp?.Content is not null && comp.Content.Any();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Ping OpenAI falló (tenant={Tenant})", _tenant.CurrentTenantId.Value);
+            return false;
+        }
+    }
+
 }
