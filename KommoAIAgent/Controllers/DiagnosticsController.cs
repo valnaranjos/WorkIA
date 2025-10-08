@@ -1,14 +1,16 @@
 ﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 
 namespace KommoAIAgent.Controllers
 {
     /// <summary>
-    /// Endpoints simples para observar el contexto de tenant y salud del servicio.
+    /// Endpoints simples para observar el contexto de tenant y salud del servicio, desde fuera.
     /// </summary>
     [ApiController]
-    public sealed class DiagnosticsController : ControllerBase
+    public partial class DiagnosticsController : ControllerBase
     {
         private readonly ITenantContext _tenant;
         private readonly ITokenBudget _budget;
@@ -19,9 +21,11 @@ namespace KommoAIAgent.Controllers
             _budget = budget;
         }
 
-
-        // GET /t/{slug}/__whoami
-        // Muestra el tenant actualmente resuelto por el middleware, útil para probar rutas/headers.
+        /// <summary>
+        /// GET /t/{slug}/__whoami
+        /// Muestra el tenant actualmente resuelto por el middleware, útil para probar rutas/headers.
+        /// </summary>
+        /// <returns></returns>
         [HttpGet("/t/{slug}/__whoami")]
         public IActionResult WhoAmI()
         {
@@ -34,8 +38,11 @@ namespace KommoAIAgent.Controllers
             });
         }
 
-        // GET /t/{slug}/__health
-        // Healthcheck “lógico” por tenant (p. ej. confirmar que hay token/config).
+        /// <summary>
+        /// Healthcheck “lógico” por tenant (p. ej. confirmar que hay token/config).
+        /// GET /t/{slug}/__health
+        /// </summary>
+        /// <returns></returns>
         [HttpGet("/t/{slug}/__health")]
         public IActionResult TenantHealth()
         {
@@ -46,14 +53,22 @@ namespace KommoAIAgent.Controllers
                       : StatusCode(503, new { status = "UNHEALTHY", tenant = _tenant.CurrentTenantId.Value });
         }
 
-        // GET /__health
-        // Healthcheck básico de proceso (sin tenant).
+       
+        /// <summary>
+        /// Healthcheck básico de proceso, sin tenants.
+        /// GET /__health
+        /// </summary>
+        /// <returns></returns>
         [HttpGet("/__health")]
         public IActionResult Health() => Ok(new { status = "OK" });
 
 
-        // GET /t/{slug}/__budget
-        // Devuelve: periodo, límite, usado, restante, factor de estimación y msg de exceso
+        /// <summary>
+        /// GET /t/{slug}/__budget
+        /// Devuelve: periodo, límite, usado, restante, factor de estimación y msg de exceso
+        /// </summary>
+        /// <param name="ct"></param>
+        /// <returns></returns>
         [HttpGet("/t/{slug}/__budget")]
         public async Task<IActionResult> GetBudgetAsync(CancellationToken ct)
         {
@@ -73,6 +88,58 @@ namespace KommoAIAgent.Controllers
                 EstimationFactor = cfg?.EstimationFactor ?? 0.85,
                 ExceededMessage = cfg?.ExceededMessage
             });
+        }
+    }
+
+    /// <summary>
+    /// Diagnosticos o health dentro de la API.
+    /// </summary>
+    public partial class DiagnosticsController : ControllerBase
+    {
+        /// <summary>
+        /// Liveness: proceso vivo.
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet("~/health/live")]
+        [AllowAnonymous]
+        public IActionResult Live() => Ok(new { ok = true });
+
+        /// <summary>
+        /// Readness:  DB + pgvector + al menos un tenant activo
+        /// </summary>
+        /// <param name="ds"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        [HttpGet("~/health/ready")]
+        [AllowAnonymous]
+        public async Task<IActionResult> Ready([FromServices] NpgsqlDataSource ds, CancellationToken ct)
+        {
+            try
+            {
+                await using var conn = await ds.OpenConnectionAsync(ct);
+
+                // DB ok
+                await using (var ping = new NpgsqlCommand("SELECT 1", conn))
+                    await ping.ExecuteScalarAsync(ct);
+
+                //pgvector ok
+                const string sqlExt = "SELECT 1 FROM pg_extension WHERE extname='vector' LIMIT 1";
+                await using (var cmdExt = new NpgsqlCommand(sqlExt, conn))
+                    if (await cmdExt.ExecuteScalarAsync(ct) is null)
+                        return StatusCode(503, new { ok = false, reason = "pgvector missing" });
+
+                //al menos un tenant activo
+                const string sqlTenant = "SELECT 1 FROM tenants WHERE \"IsActive\" = true LIMIT 1";
+                await using (var cmdTenant = new NpgsqlCommand(sqlTenant, conn))
+                    if (await cmdTenant.ExecuteScalarAsync(ct) is null)
+                        return StatusCode(503, new { ok = false, reason = "no active tenants" });
+
+                return Ok(new { ok = true });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(503, new { ok = false, reason = ex.GetType().Name });
+            }
         }
     }
 }
