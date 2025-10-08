@@ -1,4 +1,5 @@
 ﻿using KommoAIAgent.Api.Contracts;
+using KommoAIAgent.Api.Security;
 using KommoAIAgent.Application.Common;
 using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Infrastructure.Persistence;
@@ -11,15 +12,18 @@ namespace KommoAIAgent.Controllers;
 
 /// <summary>
 /// Controlador para la administración de tenants
+/// Agregar, editar y eliminar (soft-delete) tenants.
+/// Agregar o actualizar prompts y reglas de negocio.
 /// </summary>
 [ApiController]
 [Route("admin/[controller]")]
-public class TenantsController : ControllerBase
+[AdminApiKey]
+public class AdminTenantsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private static readonly Regex SlugRx = new("^[a-z0-9-]+$", RegexOptions.Compiled);
 
-    public TenantsController(AppDbContext db) => _db = db;
+    public AdminTenantsController(AppDbContext db) => _db = db;
 
     /// <summary>
     /// Obtiene la lista completa de tenants.
@@ -52,36 +56,74 @@ public class TenantsController : ControllerBase
     /// <param name="req"></param>
     /// <returns></returns>
     [HttpPost]
-    public async Task<ActionResult<TenantResponse>> Create(TenantRequest req)
+    [Consumes("application/json")]
+    public async Task<ActionResult<TenantResponse>> Create([FromBody] TenantCreateRequest req)
     {
+        // Slug: provisto o derivado del subdominio Kommo
         var slug = string.IsNullOrWhiteSpace(req.Slug)
             ? SubdomainParser.DeriveSlug(req.KommoBaseUrl)
             : req.Slug.Trim().ToLowerInvariant();
 
+        if (!SlugRx.IsMatch(slug))
+            return BadRequest("Slug inválido (usa a-z, 0-9 y guiones).");
+
         if (await _db.Tenants.AnyAsync(x => x.Slug == slug))
             return Conflict($"Subdominio '{slug}' ya existe.");
 
-        var tenant = new Tenant
+        // Validaciones mínimas adicionales (además de DataAnnotations)
+        if (string.IsNullOrWhiteSpace(req.DisplayName))
+            return BadRequest("DisplayName es requerido.");
+        if (req.KommoMensajeIaFieldId <0)
+            return BadRequest("KommoMensajeIaFieldId es requerido y debe ser > 0.");
+
+        // Reglas de negocio a string JSON (si vinieron)
+        string rulesRaw = "{}";
+        if (req.BusinessRules is JsonElement el)
+            rulesRaw = el.GetRawText()?.Trim() ?? "{}";
+
+        var now = DateTime.UtcNow;
+
+        var t = new Tenant
         {
             Id = Guid.NewGuid(),
             Slug = slug,
             DisplayName = req.DisplayName.Trim(),
+            IsActive = req.IsActive,
+
+            // --- Kommo ---
             KommoBaseUrl = req.KommoBaseUrl.Trim(),
-            IaProvider = req.IaProvider ?? "OpenAI",
-            IaModel = req.IaModel ?? "gpt-4o-mini",
-            Temperature = req.Temperature,
-            TopP = req.TopP,
+            KommoAccessToken = req.KommoAccessToken ?? string.Empty,
+            KommoScopeId = (req.KommoScopeId ?? string.Empty).Trim(),          // <- era int→string
+            KommoMensajeIaFieldId = req.KommoMensajeIaFieldId,                  // deja el tipo que tengas (int/long)
+
+            // --- IA ---
+            IaProvider = req.IaProvider,
+            IaModel = req.IaModel,
+            Temperature = (float)req.Temperature,   // <- double→float
+            TopP = (float)req.TopP,          // <- double→float
             MaxTokens = req.MaxTokens,
-            MonthlyTokenBudget = req.MonthlyTokenBudget ?? 5_000_000,
-            AlertThresholdPct = req.AlertThresholdPct ?? 75,
-            IsActive = true,
-            CreatedAt = DateTime.UtcNow
+            SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim(),
+            BusinessRulesJson = rulesRaw,           // tu string RAW del JSON
+
+            // --- Operación / Límites ---
+            DebounceMs = req.DebounceMs,
+            RatePerMinute = req.RatePerMinute,
+            RatePer5Minutes = req.RatePer5Minutes,
+            MemoryTTLMinutes = req.MemoryTTLMinutes,
+            ImageCacheTTLMinutes = req.ImageCacheTTLMinutes,
+            MonthlyTokenBudget = req.MonthlyTokenBudget,
+            AlertThresholdPct = req.AlertThresholdPct,  // <- double→float (si guardas 0..1)
+                                                               // Si guardas 0..100, usa: (float)(req.AlertThresholdPct / 100.0)
+
+            // --- Auditoría ---
+            CreatedAt = now,
+            UpdatedAt = now
         };
 
-        _db.Tenants.Add(tenant);
+        _db.Tenants.Add(t);
         await _db.SaveChangesAsync();
 
-        return CreatedAtAction(nameof(GetBySlug), new { slug = tenant.Slug }, ToResponse(tenant));
+        return CreatedAtAction(nameof(GetBySlug), new { slug = t.Slug }, ToResponse(t));
     }
 
     /// <summary>
@@ -91,26 +133,51 @@ public class TenantsController : ControllerBase
     /// <param name="req"></param>
     /// <returns></returns>
     [HttpPut("by-slug/{slug}")]
-    public async Task<ActionResult<TenantResponse>> UpdateBySlug(string slug, TenantRequest req)
+    [Consumes("application/json")]
+    public async Task<ActionResult<TenantResponse>> UpdateBySlug(string slug, [FromBody] TenantUpdateRequest req)
     {
         if (!SlugRx.IsMatch(slug)) return BadRequest("Slug inválido (usa a-z, 0-9 y guiones).");
 
-        var tenant = await _db.Tenants.FirstOrDefaultAsync(x => x.Slug == slug);
-        if (tenant is null) return NotFound();
+        var t = await _db.Tenants.FirstOrDefaultAsync(x => x.Slug == slug);
+        if (t is null) return NotFound();
 
-        tenant.DisplayName = req.DisplayName ?? tenant.DisplayName;
-        tenant.KommoBaseUrl = req.KommoBaseUrl ?? tenant.KommoBaseUrl;
-        tenant.IaProvider = req.IaProvider ?? tenant.IaProvider;
-        tenant.IaModel = req.IaModel ?? tenant.IaModel;
-        tenant.Temperature = req.Temperature ?? tenant.Temperature;
-        tenant.TopP = req.TopP ?? tenant.TopP;
-        tenant.MaxTokens = req.MaxTokens ?? tenant.MaxTokens;
-        tenant.MonthlyTokenBudget = req.MonthlyTokenBudget ?? tenant.MonthlyTokenBudget;
-        tenant.AlertThresholdPct = req.AlertThresholdPct ?? tenant.AlertThresholdPct;
-        tenant.UpdatedAt = DateTime.UtcNow;
+        // Identidad
+        if (!string.IsNullOrWhiteSpace(req.DisplayName)) t.DisplayName = req.DisplayName.Trim();
+        if (req.IsActive.HasValue) t.IsActive = req.IsActive.Value;
+
+        // Kommo
+        if (!string.IsNullOrWhiteSpace(req.KommoBaseUrl)) t.KommoBaseUrl = req.KommoBaseUrl.Trim();
+        if (!string.IsNullOrWhiteSpace(req.KommoAccessToken)) t.KommoAccessToken = req.KommoAccessToken;
+        if (!string.IsNullOrWhiteSpace(req.KommoScopeId)) t.KommoScopeId = req.KommoScopeId.Trim();
+        if (req.KommoMensajeIaFieldId.HasValue && req.KommoMensajeIaFieldId.Value > 0)
+            t.KommoMensajeIaFieldId = req.KommoMensajeIaFieldId.Value;
+
+        // IA
+        if (!string.IsNullOrWhiteSpace(req.IaProvider)) t.IaProvider = req.IaProvider;
+        if (!string.IsNullOrWhiteSpace(req.IaModel)) t.IaModel = req.IaModel;
+        if (req.Temperature.HasValue) t.Temperature = req.Temperature.Value;
+        if (req.TopP.HasValue) t.TopP = req.TopP.Value;
+        if (req.MaxTokens.HasValue) t.MaxTokens = req.MaxTokens.Value;
+        if (req.SystemPrompt is not null) t.SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim();
+
+        if (req.BusinessRules is JsonElement el)
+            t.BusinessRulesJson = el.GetRawText()?.Trim() ?? t.BusinessRulesJson;
+
+        // Operación / límites
+        if (req.DebounceMs.HasValue) t.DebounceMs = req.DebounceMs.Value;
+        if (req.RatePerMinute.HasValue) t.RatePerMinute = req.RatePerMinute.Value;
+        if (req.RatePer5Minutes.HasValue) t.RatePer5Minutes = req.RatePer5Minutes.Value;
+        if (req.MemoryTTLMinutes.HasValue) t.MemoryTTLMinutes = req.MemoryTTLMinutes.Value;
+        if (req.ImageCacheTTLMinutes.HasValue) t.ImageCacheTTLMinutes = req.ImageCacheTTLMinutes.Value;
+
+        // Presupuesto
+        if (req.MonthlyTokenBudget.HasValue) t.MonthlyTokenBudget = req.MonthlyTokenBudget.Value;
+        if (req.AlertThresholdPct.HasValue) t.AlertThresholdPct = req.AlertThresholdPct.Value;
+
+        t.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
-        return ToResponse(tenant);
+        return ToResponse(t);
     }
 
 
@@ -224,7 +291,25 @@ public class TenantsController : ControllerBase
     /// </summary>
     /// <param name="t"></param>
     /// <returns></returns>
-    private static TenantResponse ToResponse(Tenant t) =>
-        new(t.Id, t.Slug, t.DisplayName, t.IsActive, t.KommoBaseUrl, t.IaProvider, t.IaModel,
-            t.MonthlyTokenBudget, t.AlertThresholdPct, t.CreatedAt, t.UpdatedAt, t.SystemPrompt, t.BusinessRulesJson);
+    private static TenantResponse ToResponse(Tenant t)
+    {
+        // Normaliza alerta: si en DB está en 0..100, conviértelo a 0..1; si ya está en 0..1 lo deja igual.
+        double alertFrac = t.AlertThresholdPct > 1 ? (t.AlertThresholdPct / 100.0) : t.AlertThresholdPct;
+        var updated = t.UpdatedAt ?? t.CreatedAt;
+        return new TenantResponse(
+            t.Id,
+            t.Slug,
+            t.DisplayName,
+            t.IsActive,
+            t.KommoBaseUrl,
+            t.IaProvider,
+            t.IaModel,
+            t.MonthlyTokenBudget,
+            alertFrac,
+            t.CreatedAt,
+            updated,
+            t.SystemPrompt ?? string.Empty,
+            t.BusinessRulesJson // lo devolvemos RAW; el front decide si parsea
+        );
+    }
 }

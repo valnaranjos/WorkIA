@@ -7,6 +7,8 @@ namespace KommoAIAgent.Domain.Tenancy
   /// </summary>
     public sealed class TenantConfig
     {
+        internal int MonthlyTokenBudget;
+
         // Identificador del tenant, p.ej. "serticlouddesarrollo"
         public required string Slug { get; init; }
 

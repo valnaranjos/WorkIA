@@ -22,7 +22,7 @@ public class Tenant
     public string? KommoScopeId { get; set; }
 
     // IA
-    public string IaProvider { get; set; } = "OpenAI";    // enum-string simple para no crear otra tabla
+    public string IaProvider { get; set; } = "OpenAI";    // enum-string simple para no crear otra tabla, hacerlo dsps.
     public string IaModel { get; set; } = "gpt-4o-mini";
     public float? Temperature { get; set; }               // opcional
     public float? TopP { get; set; }                      // opcional
@@ -30,7 +30,7 @@ public class Tenant
 
     // Budget & guardrails
     public int MonthlyTokenBudget { get; set; } = 5_000_000;
-    public int AlertThresholdPct { get; set; } = 75;      // estándar
+    public int AlertThresholdPct { get; set; } = 80;
 
     // Runtime (defaults globales; override por tenant si quieres)
     public int MemoryTTLMinutes { get; set; } = 120;
