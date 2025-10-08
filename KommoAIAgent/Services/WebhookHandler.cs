@@ -137,6 +137,9 @@ namespace KommoAIAgent.Services
             _logger.LogInformation("Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
                 leadId, userText, attachments?.Count ?? 0);
 
+            const int KOMMO_FIELD_MAX = 8000;      // único lugar
+            const float GuardrailScore = 0.22f;
+
             try
             {
                 // Limitar bursts por tenant/lead (lee Budgets.BurstPerMinute)
@@ -201,8 +204,28 @@ namespace KommoAIAgent.Services
                         else
                             _logger.LogInformation("RAG sin resultados para tenant={Tenant}", tenantSlug);
 
-                        // Umbral de confianza para decidir si aportamos CONTEXT o pedimos más datos, se recomienda >=0.3
-                        const float MinScore = 0.28f;
+                        if (hits.Count == 0 || hits[0].Score < GuardrailScore)
+                        {
+                            var safeReply =
+                                "No encuentro información suficiente en la base de conocimiento para responder con precisión. " +
+                                "¿Podrías darme más detalle (por ejemplo, producto, ciudad o tipo de trámite)?";
+
+                            // Persistimos conversación igualmente
+                            await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                            await _conv.AppendAssistantAsync(_tenant, leadId, safeReply, ct);
+
+                            // Publicamos en Kommo usando el mismo campo largo de siempre
+                          
+                            await _kommoService.UpdateLeadMensajeIAAsync(
+                                leadId,
+                                TextUtil.Truncate(safeReply, KOMMO_FIELD_MAX),
+                                CancellationToken.None);
+
+                            _logger.LogInformation("RAG guardrail: respuesta segura enviada sin invocar IA (lead={LeadId})", leadId);
+                            return;
+                        }
+                            // Umbral de confianza para decidir si aportamos CONTEXT o pedimos más datos, se recomienda >=0.3
+                            const float MinScore = 0.28f;
 
                         //Si hay hits buenos, los añadimos al prompt
                         if (hits.Count > 0 && hits[0].Score >= MinScore)
@@ -229,14 +252,6 @@ namespace KommoAIAgent.Services
 
                             // Inyectamos el contexto ANTES del mensaje de usuario
                             messages.Add(ChatMessage.CreateSystemMessage(sbCtx.ToString()));
-                        }
-                        else
-                        {
-                            // Si el match es flojo, instruimos a no inventar
-                            messages.Add(ChatMessage.CreateSystemMessage(
-                                "No hay suficiente contexto relevante. " +
-                                "Responde que no tienes información en la base de conocimiento y pide detalles concretos."
-                            ));
                         }
                     }
                     catch (Exception rex)
@@ -268,8 +283,6 @@ namespace KommoAIAgent.Services
                     await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
                 }
 
-                // Publicamos la respuesta en Kommo (campo de texto largo)
-                const int KOMMO_FIELD_MAX = 8000;
                 await _kommoService.UpdateLeadMensajeIAAsync(
                     leadId,
                     TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),

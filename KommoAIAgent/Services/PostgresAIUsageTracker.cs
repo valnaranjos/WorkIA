@@ -1,6 +1,7 @@
 ﻿using KommoAIAgent.Services.Interfaces;
 using Npgsql;
 using NpgsqlTypes;
+using System.Data.Common;
 
 namespace KommoAIAgent.Services
 {
@@ -66,6 +67,42 @@ DO UPDATE SET
 
 
             await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        /// <summary>
+        /// Obtiene el total mensual x tenat
+        /// </summary>
+        /// <param name="tenant"></param>
+        /// <param name="month"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        public async Task<(int embChars, int chatIn, int chatOut, int calls, int errors)>
+        GetMonthTotalsAsync(string tenant, DateOnly month, CancellationToken ct)
+        {
+            // Primer y último día del mes
+            var from = new DateOnly(month.Year, month.Month, 1);
+            var to = from.AddMonths(1).AddDays(-1);
+
+            const string sql = @"
+SELECT COALESCE(SUM(emb_char_count),0),
+       COALESCE(SUM(chat_in_tokens),0),
+       COALESCE(SUM(chat_out_tokens),0),
+       COALESCE(SUM(calls),0),
+       COALESCE(SUM(errors),0)
+FROM tenant_usage_daily
+WHERE tenant_slug=@t AND date BETWEEN @from AND @to;";
+
+            await using var conn = await _ds.OpenConnectionAsync(ct);
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("t", NpgsqlTypes.NpgsqlDbType.Text, tenant);
+            cmd.Parameters.AddWithValue("from", NpgsqlTypes.NpgsqlDbType.Date, from);
+            cmd.Parameters.AddWithValue("to", NpgsqlTypes.NpgsqlDbType.Date, to);
+
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            if (await rdr.ReadAsync(ct))
+                return (rdr.GetInt32(0), rdr.GetInt32(1), rdr.GetInt32(2), rdr.GetInt32(3), rdr.GetInt32(4));
+
+            return (0, 0, 0, 0, 0);
         }
     }
 }

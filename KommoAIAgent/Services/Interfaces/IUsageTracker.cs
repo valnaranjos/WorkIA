@@ -49,5 +49,17 @@
         Task TrackErrorAsync(
             string tenant, string provider, string model,
             CancellationToken ct = default);
+
+
+        /// <summary>
+        /// Obtiene el total por mes x tenant
+        /// </summary>
+        /// <param name="tenant"></param>
+        /// <param name="month"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        Task<(int embChars, int chatIn, int chatOut, int calls, int errors)>
+    GetMonthTotalsAsync(string tenant, DateOnly month, CancellationToken ct);
+
     }
 }
