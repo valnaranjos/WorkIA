@@ -1,4 +1,5 @@
 using KommoAIAgent.Api.Middleware;
+using KommoAIAgent.Api.Security;
 using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Infrastructure.Persistence;
@@ -100,6 +101,9 @@ builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 // Servicio de tracking de uso de IA en PostgreSQL
 builder.Services.AddScoped<IAIUsageTracker, PostgresAIUsageTracker>();
 
+//Servicio de api key para administración.
+builder.Services.AddScoped<AdminApiKeyFilter>();
+
 //API Básica
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -142,6 +146,8 @@ app.MapGet("/__whoami", (ITenantContext t) =>
 
 
 app.UseHttpsRedirection();
+
+app.UseStaticFiles();
 
 app.MapControllers();
 

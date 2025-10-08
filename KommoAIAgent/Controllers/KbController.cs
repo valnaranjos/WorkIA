@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace KommoAIAgent.Controllers;
 
+/// <summary>
+/// Controlador para gestión y consulta de la base de conocimiento (KB).
+/// </summary>
 [ApiController]
 [Route("kb")]
 public sealed class KbController : ControllerBase

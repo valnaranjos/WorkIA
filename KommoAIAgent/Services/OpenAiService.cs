@@ -42,23 +42,7 @@ public class OpenAiService : IAiService
         _logger = logger;
         _tenant = tenant;
         _keys = keys;
-        _usage = usage;
-
-        /*
-        // Validación: el tenant debe estar resuelto
-        if (string.IsNullOrWhiteSpace(_tenant.CurrentTenantId.Value))
-            throw new InvalidOperationException("TenantId no puede estar vacío");
-
-        // Obtiene la ApiKey del tenant (desde BD, secrets o variable de entorno)
-        var apiKey = _keys.GetApiKey(_tenant.Config);
-        if (string.IsNullOrWhiteSpace(apiKey))
-            throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{_tenant.CurrentTenantId}'");
-
-        // Crea el cliente oficial de OpenAI con la ApiKey del tenant
-        _client = new OpenAIClient(apiKey);
-
-        _logger.LogInformation("OpenAiService inicializado para tenant={Tenant}",
-        _tenant.CurrentTenantId.Value);*/
+        _usage = usage;      
     }
 
     /// <summary>
