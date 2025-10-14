@@ -156,15 +156,13 @@ FROM (
         if (string.IsNullOrWhiteSpace(sourceId))
             return BadRequest(new { error = "Parámetro 'sourceId' es requerido" });
 
-        var ok = await _store.DeleteDocumentAsync(tenant, sourceId, ct); // <- tu firma actual devuelve bool
-        _logger.LogInformation("Admin KB delete tenant={Tenant} sourceId={Source} ok={Ok}", tenant, sourceId, ok);
+        var affected = await _store.DeleteDocumentAsync(tenant, sourceId, ct); // ← UNA SOLA VEZ
+        _logger.LogInformation("Admin KB delete tenant={Tenant} sourceId={SourceId} affected={Affected}", tenant, sourceId, affected);
 
-        var affected = await _store.DeleteDocumentAsync(tenant, sourceId, ct);
-        if (affected > 0)
-            return Ok(new { deleted = affected });
-        else
-            return NotFound(new { error = "not found" });
+
+        return affected > 0 ? Ok(new { deleted = affected }) : NotFound(new { error = "not found" });
     }
+    
 
     
     /// <summary>
