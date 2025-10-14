@@ -61,5 +61,25 @@
         Task<(int embChars, int chatIn, int chatOut, int calls, int errors)>
     GetMonthTotalsAsync(string tenant, DateOnly month, CancellationToken ct);
 
+
+        /// <summary>
+        /// Loguea un error detallado (no solo el contador) para análisis posterior.
+        /// </summary>
+        /// <param name="tenant"></param>
+        /// <param name="provider"></param>
+        /// <param name="model"></param>
+        /// <param name="operation"></param>
+        /// <param name="message"></param>
+        /// <param name="raw"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        Task LogErrorAsync(
+            string? tenant,
+            string? provider,
+            string? model,
+            string operation,
+            string message,
+            object? raw = null,
+            CancellationToken ct = default);
     }
 }

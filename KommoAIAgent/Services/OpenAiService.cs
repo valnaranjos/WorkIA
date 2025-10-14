@@ -52,6 +52,22 @@ public class OpenAiService : IAiService
     /// </summary>
     public async Task<string> GenerateContextualResponseAsync(string textPrompt, CancellationToken ct = default)
     {
+        var cfg = _tenant.Config;
+        var slug = _tenant.Config?.Slug ?? _tenant.CurrentTenantId.Value;
+        var month = DateOnly.FromDateTime(DateTime.UtcNow);
+        var (embChars, chatIn, chatOut, calls, errors) = await _usage.GetMonthTotalsAsync(slug, month, ct);
+
+        var budgetTokens = cfg?.Budgets?.TokenLimit ?? 0;
+        if (budgetTokens > 0 && (chatIn + chatOut) >= budgetTokens)
+        {
+            _logger.LogWarning("Budget soft-stop: tenant={Tenant} used={Used}/{Budget}",
+                slug, chatIn + chatOut, budgetTokens);
+
+            return "Hemos alcanzado el límite mensual de IA para este canal. " +
+                   "Si necesitas continuar, podemos ampliar temporalmente el cupo. 🙏";
+        }
+
+
         var client = EnsureClient();
         var model = _tenant.Config?.OpenAI?.Model ?? "gpt-4o-mini";
         var maxTokens = _tenant.Config?.OpenAI?.MaxTokens ?? 400;
@@ -68,23 +84,38 @@ public class OpenAiService : IAiService
             TopP = (float)(_tenant.Config?.OpenAI?.TopP ?? 1.0f)
         };
 
-        var completion = await CallWithRetryAsync(
-            () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
-            _logger,
-            ct
-        );
+        try
+        {
+            var completion = await CallWithRetryAsync(
+                () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
+                _logger,
+                ct
+            );
 
-        var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+            var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
 
-        // MÉTRICAS (chat): usa AiUtil para DRY
-        await TrackChatUsageAsync(
-            textPrompt ?? string.Empty,
-            assistantText,
-            completion?.Usage?.InputTokenCount,
-            completion?.Usage?.OutputTokenCount,
-            ct);
+            await TrackChatUsageAsync(
+                textPrompt ?? string.Empty,
+                assistantText,
+                completion?.Usage?.InputTokenCount,
+                completion?.Usage?.OutputTokenCount,
+                ct);
 
-        return assistantText;
+            return assistantText;
+        }
+        catch (Exception ex)
+        {
+            // 🔴 registra incidencia en métricas + log detalle (sin reventar la app)
+            try
+            {
+                await _usage.TrackErrorAsync(slug, "openai", model, ct);
+                await _usage.LogErrorAsync(slug, "openai", model, "chat", ex.Message, new { op = "GenerateContextualResponse", model }, ct);
+            }
+            catch { /* no bloquear por métricas */ }
+
+            _logger.LogError(ex, "OpenAI Chat falló (tenant={Tenant}, model={Model})", slug, model);
+            return "⚠️ Tuvimos un problema temporal al consultar la IA. Intenta de nuevo en un momento.";
+        }
     }
 
 
@@ -151,6 +182,14 @@ public class OpenAiService : IAiService
         }
         catch (Exception ex)
         {
+            try
+            {
+                var slug = _tenant.Config?.Slug ?? _tenant.CurrentTenantId.Value;
+                await _usage.TrackErrorAsync(slug, "openai", model, CancellationToken.None);
+                await _usage.LogErrorAsync(slug, "openai", model, "vision", ex.Message, new { op = "AnalyzeImageFromBytes" }, CancellationToken.None);
+            }
+            catch { }
+
             _logger.LogError(ex, "OpenAI Vision BYTES falló (tenant={Tenant})", _tenant.CurrentTenantId);
             return "⚠️ No pude analizar la imagen por ahora. Un agente te ayudará enseguida.";
         }
@@ -242,6 +281,20 @@ public class OpenAiService : IAiService
      CancellationToken ct = default)
     {
         var cfg = _tenant.Config;
+        var slug = _tenant.Config?.Slug ?? _tenant.CurrentTenantId.Value;
+        var month = DateOnly.FromDateTime(DateTime.UtcNow);
+        var (embChars, chatIn, chatOut, calls, errors) = await _usage.GetMonthTotalsAsync(slug, month, ct);
+
+        var budgetTokens = cfg.Budgets?.TokenLimit ?? 0;
+        if (budgetTokens > 0 && (chatIn + chatOut) >= budgetTokens)
+        {
+            _logger.LogWarning("Budget soft-stop: tenant={Tenant} used={Used}/{Budget}",
+                slug, chatIn + chatOut, budgetTokens);
+
+            return "Hemos alcanzado el límite mensual de IA para este canal. " +
+                   "Si necesitas continuar, podemos ampliar temporalmente el cupo. 🙏";
+        }
+
 
         // Usa el modelo del tenant si no se especifica otro
         var selectedModel = model ?? cfg.OpenAI?.Model ?? "gpt-4o-mini";
@@ -260,25 +313,36 @@ public class OpenAiService : IAiService
             "CompleteAsync → tenant={Tenant}, model={Model}, msgs={Count}, maxTokens={Max}",
             _tenant.CurrentTenantId, selectedModel, messages.Count(), maxTokens);
 
-        var completion = await CallWithRetryAsync(
-            () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
-            _logger,
-            ct
-        );
+        try
+        {
+            var completion = await CallWithRetryAsync(
+                () => chatClient.CompleteChatAsync(messages, options, cancellationToken: ct),
+                _logger,
+                ct
+            );
 
-        var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
+            var assistantText = completion?.Content?.FirstOrDefault()?.Text ?? string.Empty;
 
-        // Si el SDK no trae Usage, el helper estimará tokens por longitud.
-        // Como aquí no tenemos un único "prompt", pasamos string.Empty;
-        // si quieres, podemos reconstruir el texto del usuario más adelante.
-        await TrackChatUsageAsync(
-            string.Empty,
-            assistantText,
-            completion?.Usage?.InputTokenCount,
-            completion?.Usage?.OutputTokenCount,
-            ct);
+            await TrackChatUsageAsync(
+                string.Empty,
+                assistantText,
+                completion?.Usage?.InputTokenCount,
+                completion?.Usage?.OutputTokenCount,
+                ct);
 
-        return assistantText;
+            return assistantText;
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await _usage.TrackErrorAsync(slug, "openai", selectedModel, ct);
+                await _usage.LogErrorAsync(slug, "openai", selectedModel, "chat", ex.Message, new { op = "CompleteAsync", model = selectedModel }, ct);
+            }
+            catch { }
+            _logger.LogError(ex, "CompleteAsync falló (tenant={Tenant}, model={Model})", slug, selectedModel);
+            return "⚠️ No pude generar respuesta ahora mismo. ¿Puedes intentar de nuevo?";
+        }
     }
 
     /// <summary>

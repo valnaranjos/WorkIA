@@ -153,13 +153,43 @@ public sealed class PgVectorKnowledgeStore : IKnowledgeStore
     public async Task<int> DeleteDocumentAsync(string tenant, string sourceId, CancellationToken ct = default)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
 
-        const string sql = @"DELETE FROM kb_documents WHERE tenant_slug=@t AND source_id=@s;";
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.Parameters.AddWithValue("t", NpgsqlDbType.Text, tenant);
-        cmd.Parameters.AddWithValue("s", NpgsqlDbType.Text, sourceId);
+        // 1) localizar ids por tenant+source_id
+        const string sqlFind = @"
+        SELECT id
+        FROM kb_documents
+        WHERE tenant_slug = @tenant AND source_id = @sourceId
+        FOR UPDATE";
+        var docIds = new List<long>();
+        await using (var cmd = new NpgsqlCommand(sqlFind, conn, tx))
+        {
+            cmd.Parameters.AddWithValue("@tenant", tenant);
+            cmd.Parameters.AddWithValue("@sourceId", sourceId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) docIds.Add(r.GetInt64(0));
+        }
+        if (docIds.Count == 0) { await tx.RollbackAsync(ct); return 0; }
 
-        return await cmd.ExecuteNonQueryAsync(ct);
+        // 2) borrar chunks primero (si no tienes ON DELETE CASCADE)
+        const string sqlDelChunks = @"DELETE FROM kb_chunks WHERE document_id = ANY(@docIds)";
+        await using (var cmd = new NpgsqlCommand(sqlDelChunks, conn, tx))
+        {
+            cmd.Parameters.AddWithValue("@docIds", docIds);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 3) borrar documentos
+        const string sqlDelDocs = @"DELETE FROM kb_documents WHERE id = ANY(@docIds)";
+        int affected;
+        await using (var cmd = new NpgsqlCommand(sqlDelDocs, conn, tx))
+        {
+            cmd.Parameters.AddWithValue("@docIds", docIds);
+            affected = await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return affected;
     }
 
     /// <summary>

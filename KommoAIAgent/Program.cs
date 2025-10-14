@@ -104,6 +104,11 @@ builder.Services.AddScoped<IAIUsageTracker, PostgresAIUsageTracker>();
 //Servicio de api key para administración.
 builder.Services.AddScoped<AdminApiKeyFilter>();
 
+
+//Servicio de catálogo de costes de IA leyendo desde tabla ia_costs en PostgreSQL.
+builder.Services.AddSingleton<IAiCostCatalog, PostgresAiCostCatalog>();
+
+
 //API Básica
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -129,21 +134,6 @@ app.Use(async (ctx, next) =>
     await next();
     Console.WriteLine($"<-- {ctx.Response.StatusCode} {ctx.Request.Path}");
 });
-
-// -------------------- Endpoints --------------------
-
-// Punto de entrada para verificar health check de la IA.
-app.MapGet("/health/ai", async (IAiService ai) =>
-{
-    var ok = await ai.PingAsync();
-    return ok ? Results.Ok(new { ai = "ok" }) : Results.StatusCode(503);
-});
-
-//Diagnóstico de tenant actual
-app.MapGet("/__whoami", (ITenantContext t) =>
-    Results.Json(new { tenant = t.CurrentTenantId.Value, baseUrl = t.Config.Kommo.BaseUrl })
-);
-
 
 app.UseHttpsRedirection();
 

@@ -42,7 +42,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         IEmbeddingCache dbCache,
         IAIUsageTracker usage,
         ILogger<OpenAIEmbeddingService> log)
-     {
+    {
         _provider = provider;
         _cache = cache;
         _tenant = tenant;
@@ -56,7 +56,7 @@ public sealed class OpenAIEmbeddingService : IEmbedder
     /// </summary>
     public async Task<float[]> EmbedTextAsync(string text, CancellationToken ct = default)
     {
-        
+
         var provider = AiUtil.ProviderId(_tenant.Config);
         var key = CacheKey(provider, Model, text);
         var slug = AiUtil.TenantSlug(_tenant);
@@ -97,10 +97,33 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             _logger.LogWarning("Embedding cancelado por request (tenant={Tenant})", slug);
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException oce)
         {
-            _logger.LogWarning("Timeout al pedir embedding (tenant={Tenant})", slug);
+            // 🔴 timeout: lo contamos como error de proveedor
+            try
+            {
+                await _usage.TrackErrorAsync(slug, provider, Model, ct);
+                await _usage.LogErrorAsync(slug, provider, Model, "embeddings.single.timeout",
+                    oce.Message, new { len = text?.Length ?? 0 }, ct);
+            }
+            catch { /* no bloquear por métricas */ }
+
+            _logger.LogWarning(oce, "Timeout al pedir embedding (tenant={Tenant})", slug);
             throw new TimeoutException($"Embedding timeout después de 15s (tenant={slug})");
+        }
+        catch (Exception ex)
+        {
+            // 🔴 cualquier otro error del proveedor
+            try
+            {
+                await _usage.TrackErrorAsync(slug, provider, Model, ct);
+                await _usage.LogErrorAsync(slug, provider, Model, "embeddings.single",
+                    ex.Message, new { len = text?.Length ?? 0 }, ct);
+            }
+            catch { }
+
+            _logger.LogError(ex, "Error solicitando embedding (single) tenant={Tenant}", slug);
+            throw;
         }
 
         // Guardar DB + Memoria
@@ -197,11 +220,19 @@ public sealed class OpenAIEmbeddingService : IEmbedder
                 _logger.LogWarning("Batch embedding cancelado (tenant={Tenant})", slug);
                 throw;
             }
-            catch (OperationCanceledException)
+            catch (Exception ex)
             {
-                _logger.LogWarning("Timeout en batch embedding (tenant={Tenant}, count={Count})",
-                    slug, missIdx2.Count);
-                throw new TimeoutException($"Batch embedding timeout (tenant={slug}, {missIdx2.Count} items)");
+                // 🔴 cualquier otro error en batch
+                try
+                {
+                    await _usage.TrackErrorAsync(slug, provider, Model, ct);
+                    await _usage.LogErrorAsync(slug, provider, Model, "embeddings.batch",
+                        ex.Message, new { count = missIdx2.Count }, ct);
+                }
+                catch { }
+
+                _logger.LogError(ex, "Error en batch embedding (tenant={Tenant}, count={Count})", slug, missIdx2.Count);
+                throw;
             }
             // ==============================
             //Guardar y cachear
@@ -225,8 +256,8 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             await _usage.TrackEmbeddingAsync(slug, provider, Model, chars, null, ct);
         }
 
-            return result;
-        }
+        return result;
+    }
 
 
     /// <summary>
@@ -241,11 +272,11 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         var slug = AiUtil.TenantSlug(_tenant);
         var norm = TextUtil.NormalizeForEmbeddingKey(text);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(norm)));
-                
+
         return $"emb:{slug}:{provider}:{model}:{hash}";
     }
 
-   
+
     /// <summary>
     /// Computa el hash SHA256 en HEX (mayúsculas) del texto normalizado para uso en caché y DB.
     /// </summary>
