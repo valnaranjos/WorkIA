@@ -1,6 +1,7 @@
 ﻿using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 
@@ -20,6 +21,7 @@ namespace KommoAIAgent.Controllers
             _tenant = tenant;
             _budget = budget;
         }
+
 
         /// <summary>
         /// GET /t/{slug}/__whoami
@@ -53,13 +55,25 @@ namespace KommoAIAgent.Controllers
                       : StatusCode(503, new { status = "UNHEALTHY", tenant = _tenant.CurrentTenantId.Value });
         }
 
-       
+        [HttpGet("ping")]
+        [AllowAnonymous]
+        public IActionResult Ping() => Ok("pong");
+
+        [HttpGet("time")]
+        [AllowAnonymous]
+        public IActionResult Time() => Ok(new { utc = DateTime.UtcNow });
+
+        // Opcional: eco de tenant si lo mandas por header/query
+        [HttpGet("whoami")]
+        public IActionResult WhoAmI([FromHeader(Name = "X-Tenant-Slug")] string? tenant, [FromQuery] string? tenantQ)
+            => Ok(new { tenant = tenant ?? tenantQ ?? "(none)" });
+
         /// <summary>
         /// Healthcheck básico de proceso, sin tenants.
         /// GET /__health
         /// </summary>
         /// <returns></returns>
-        [HttpGet("/__health")]
+        [HttpGet("/health")]
         public IActionResult Health() => Ok(new { status = "OK" });
 
 
