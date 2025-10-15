@@ -81,7 +81,7 @@ public class AdminTenantsController : ControllerBase
         if (req.BusinessRules is JsonElement el)
             rulesRaw = el.GetRawText()?.Trim() ?? "{}";
 
-        var now = DateTime.UtcNow;
+        var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
 
         var t = new Tenant
         {
@@ -174,7 +174,7 @@ public class AdminTenantsController : ControllerBase
         if (req.MonthlyTokenBudget.HasValue) t.MonthlyTokenBudget = req.MonthlyTokenBudget.Value;
         if (req.AlertThresholdPct.HasValue) t.AlertThresholdPct = req.AlertThresholdPct.Value;
 
-        t.UpdatedAt = DateTime.UtcNow;
+        t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
 
         await _db.SaveChangesAsync();
         return ToResponse(t);
@@ -195,7 +195,7 @@ public class AdminTenantsController : ControllerBase
         if (tenant is null) return NotFound();
 
         tenant.IsActive = false;
-        tenant.UpdatedAt = DateTime.UtcNow;
+        tenant.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         await _db.SaveChangesAsync();
         return NoContent();
     }
@@ -217,9 +217,9 @@ public class AdminTenantsController : ControllerBase
         if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
 
         t.SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim();
-        t.UpdatedAt = DateTime.UtcNow;
+        t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         await _db.SaveChangesAsync();
-        return NoContent();
+        return NoContent(); 
     }
 
     /// <summary>
@@ -262,7 +262,7 @@ public class AdminTenantsController : ControllerBase
         if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
 
         t.BusinessRulesJson = raw.Trim();
-        t.UpdatedAt = DateTime.UtcNow;
+        t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);  
         await _db.SaveChangesAsync();
         return NoContent();
     }
