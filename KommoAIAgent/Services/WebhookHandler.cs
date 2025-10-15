@@ -232,11 +232,10 @@ namespace KommoAIAgent.Services
                         //Si hay hits buenos, los añadimos al prompt
                         if (hits.Count > 0 && hits[0].Score >= MinScore)
                         {
-                            // Construimos BLOQUE CONTEXTO con citas [n]
+                            // Construimos BLOQUE CONTEXTO
                             var sbCtx = new StringBuilder();
                             sbCtx.AppendLine(
                                 "CONTEXT (RAG): Usa EXCLUSIVAMENTE estos fragmentos para responder. " +
-                                "Cita afirmaciones clave con [n] (n = índice del fragmento). " +
                                 "Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles.\n"
                             );
 
@@ -249,9 +248,7 @@ namespace KommoAIAgent.Services
                                 sbCtx.AppendLine($"[{i + 1}] ({title}) {TextUtil.Truncate(h.Text, 450)}");
                             }
 
-                            // Instrucción final para citar fuentes
-                            sbCtx.AppendLine("\nAl final, agrega una línea 'Fuentes:' listando [n] Título de cada fragmento citado.");
-
+                            
                             // Inyectamos el contexto ANTES del mensaje de usuario
                             messages.Add(ChatMessage.CreateSystemMessage(sbCtx.ToString()));
                         }

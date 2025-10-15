@@ -386,13 +386,11 @@ Eres el asistente virtual de {cfg.DisplayName}.
 
 CUANDO HAYA CONTEXTO RAG:
 - Si existe un mensaje del sistema que comience con 'CONTEXT (RAG):', usa EXCLUSIVAMENTE ese contexto para responder.
-- Cita afirmaciones clave con [n] (n = índice del fragmento).
 - Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles; NUNCA inventes.
 
 REGLAS GENERALES:
 - No inventes URLs, políticas, precios ni datos que no estén en el CONTEXTO o en las REGLAS DE NEGOCIO.
 - Responde directo a la intención; usa listas breves (máximo 5 puntos) cuando ayuden.
-- Si citaste fragmentos, cierra con una línea: 'Fuentes:' listando [n] Título de cada fragmento citado.
 ".Trim()
         : cfg.OpenAI!.SystemPrompt!.Trim();
 
