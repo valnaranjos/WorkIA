@@ -1,4 +1,5 @@
 ﻿using KommoAIAgent.Application.Common;
+using KommoAIAgent.Application.Tenancy;
 using KommoAIAgent.Infrastructure;
 using KommoAIAgent.Services.Interfaces;
 using System.Collections.Concurrent;
@@ -6,7 +7,7 @@ using System.Collections.Concurrent;
 namespace KommoAIAgent.Services
 {
     /// <summary>
-    /// Memoria temporal en memoria para bufferizar mensajes entrantes por lead, con el fin de permitir al cliente responder varios mensajes de corrido antes que responda inmediatamente.
+    /// Memoria temporal en memoria para bufferizar mensajes entrantes por lead y x tenant, con el fin de permitir al cliente responder varios mensajes de corrido antes que responda inmediatamente.
     /// </summary>
     internal sealed class InMemoryMessageBuffer : IMessageBuffer
     {
@@ -67,14 +68,24 @@ namespace KommoAIAgent.Services
             }
         }
 
-        private readonly ConcurrentDictionary<long, State> _states = new();
+        private readonly ConcurrentDictionary<string, State> _states = new();
+        private readonly ITenantContextAccessor _tenant;
         private readonly ILogger<InMemoryMessageBuffer> _logger;
         private readonly TimeSpan _window;
         private readonly TimeSpan _maxBurst;
         private bool _disposed;
 
+        //Obtiene el tenant actual
+        private string Key(long leadId)
+        {
+            var slug = _tenant.Current.Config.Slug ?? "_";
+            return $"{slug}:{leadId}";
+        }
 
-        public InMemoryMessageBuffer(IConfiguration cfg, ILogger<InMemoryMessageBuffer> logger)
+
+        public InMemoryMessageBuffer(IConfiguration cfg,
+            ILogger<InMemoryMessageBuffer> logger,
+            ITenantContextAccessor tenant)
         {
             _logger = logger;
             //Trae la configuración de ventana y ráfaga máxima desde configuración, por defecto 2s y 8s.
@@ -82,6 +93,7 @@ namespace KommoAIAgent.Services
             var b = int.TryParse(cfg["Debounce:MaxBurstMs"], out var bs) ? bs : 8000;
             _window = TimeSpan.FromMilliseconds(w);
             _maxBurst = TimeSpan.FromMilliseconds(b);
+            _tenant = tenant;
         }
 
 
@@ -101,7 +113,7 @@ namespace KommoAIAgent.Services
             Func<long, AggregatedMessage, Task> onFlush,
             CancellationToken ct = default)
         {
-            var state = _states.GetOrAdd(leadId, _ => new State());
+            var state = _states.GetOrAdd(Key(leadId), _ => new State());
 
             AggregatedMessage? messageToFlush = null;
             TimeSpan flushDelay;
@@ -158,7 +170,7 @@ namespace KommoAIAgent.Services
                 // Prepara aggregate (copia defensiva) para el callback
                 messageToFlush = new AggregatedMessage(
                    Text: string.Join(" ", state.Texts).Trim(),
-                   Attachments: state.Attachments.ToList() // copia defensiva
+                   Attachments: [.. state.Attachments] // copia defensiva
                );
 
                 // Si flush inmediato, limpia ya el estado; si no, se limpia al disparar
@@ -200,6 +212,7 @@ namespace KommoAIAgent.Services
                 // Ejecutar callback
                 try
                 {
+                    //
                     await onFlush(leadId, finalMessage);
                 }
                 catch (Exception ex)
@@ -218,7 +231,7 @@ namespace KommoAIAgent.Services
         /// <param name="leadId"></param>
         public void Clear(long leadId)
         {
-            if (_states.TryRemove(leadId, out var state))
+            if (_states.TryRemove(Key(leadId), out var state))
             {
                 state.Dispose();
             }
