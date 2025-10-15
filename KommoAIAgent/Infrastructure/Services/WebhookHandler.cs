@@ -25,7 +25,7 @@ namespace KommoAIAgent.Infrastructure.Services
         private readonly LastImageCache _lastImage;
         private readonly ITenantContext _tenant;
         private readonly IRateLimiter _limiter;
-        private readonly IKnowledgeStore _kb;
+        private readonly IRagRetriever _ragRetriever;
 
         public WebhookHandler(
             IKommoApiService kommoService,
@@ -38,7 +38,7 @@ namespace KommoAIAgent.Infrastructure.Services
             LastImageCache lastImage,
             ITenantContext tenant,
             IRateLimiter limiter,
-            IKnowledgeStore kb
+            IRagRetriever ragRetriever
             )
         {
             _kommoService = kommoService;
@@ -51,7 +51,7 @@ namespace KommoAIAgent.Infrastructure.Services
             _lastImage = lastImage;
             _tenant = tenant;
             _limiter = limiter;
-            _kb = kb;
+            _ragRetriever = ragRetriever;
         }
 
         /// <summary>
@@ -187,34 +187,39 @@ namespace KommoAIAgent.Infrastructure.Services
                     // y los añadimos como un system message de "CONTEXT".
 
                     List<KbChunkHit>? hits = null;
+                    float topScore = 0f;
                     try
                     {
-                        // Cache por tenant+query+k (opcional; usa IMemoryCache inyectado)
+                        // 🔹 Declaramos cacheKey ANTES de usarlo
                         var cacheKey = $"kbhits:{tenantSlug}:{userText}:{6}";
+
+                        // Cache por tenant+query+k
                         if (!_cache.TryGetValue(cacheKey, out hits))
                         {
-                            hits = (await _kb.SearchAsync(tenantSlug, userText, topK: 6, ct: ct)).ToList();
+                            var (hitsList, ts) = await _ragRetriever.RetrieveAsync(tenantSlug, userText, topK: 6, ct);
+                            topScore = ts;
+                            hits = hitsList.ToList(); // Reasigna (no redeclares)
                             _cache.Set(cacheKey, hits, TimeSpan.FromSeconds(30));
                         }
+                        else
+                        {
+                            topScore = (hits.Count > 0) ? hits[0].Score : 0f;
+                        }
 
-                        //Logs de la búsqueda
                         if (hits.Count > 0)
-                            _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}", hits.Count, hits[0].Score);
+                            _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}", hits.Count, topScore);
                         else
                             _logger.LogInformation("RAG sin resultados para tenant={Tenant}", tenantSlug);
 
-                        if (hits.Count == 0 || hits[0].Score < GuardrailScore)
+                        if (hits.Count == 0 || topScore < GuardrailScore)
                         {
                             var safeReply =
                                 "No encuentro información suficiente en la base de conocimiento para responder con precisión. " +
                                 "¿Podrías darme más detalle (por ejemplo, producto, ciudad o tipo de trámite)?";
 
-                            // Persistimos conversación igualmente
                             await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
                             await _conv.AppendAssistantAsync(_tenant, leadId, safeReply, ct);
 
-                            // Publicamos en Kommo usando el mismo campo largo de siempre
-                          
                             await _kommoService.UpdateLeadMensajeIAAsync(
                                 leadId,
                                 TextUtil.Truncate(safeReply, KOMMO_FIELD_MAX),
@@ -223,36 +228,29 @@ namespace KommoAIAgent.Infrastructure.Services
                             _logger.LogInformation("RAG guardrail: respuesta segura enviada sin invocar IA (lead={LeadId})", leadId);
                             return;
                         }
-                            // Umbral de confianza para decidir si aportamos CONTEXT o pedimos más datos, se recomienda >=0.3
-                            const float MinScore = 0.28f;
 
-                        //Si hay hits buenos, los añadimos al prompt
-                        if (hits.Count > 0 && hits[0].Score >= MinScore)
+                        // Inyectar contexto RAG si el score es suficiente
+                        const float MinScore = 0.28f;
+                        if (topScore >= MinScore)
                         {
-                            // Construimos BLOQUE CONTEXTO
                             var sbCtx = new StringBuilder();
                             sbCtx.AppendLine(
                                 "CONTEXT (RAG): Usa EXCLUSIVAMENTE estos fragmentos para responder. " +
                                 "Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles.\n"
                             );
 
-                            // Añadir cada fragmento con su índice y título
                             for (int i = 0; i < hits.Count; i++)
                             {
                                 var h = hits[i];
                                 var title = string.IsNullOrWhiteSpace(h.Title) ? "Documento" : h.Title!;
-                                // Limitar tamaño de cada trozo para cuidar tokens
                                 sbCtx.AppendLine($"[{i + 1}] ({title}) {TextUtil.Truncate(h.Text, 450)}");
                             }
 
-                            
-                            // Inyectamos el contexto ANTES del mensaje de usuario
                             messages.Add(ChatMessage.CreateSystemMessage(sbCtx.ToString()));
                         }
                     }
                     catch (Exception rex)
                     {
-                        // Falla en retrieval: seguimos sin contexto, pero conservadores
                         _logger.LogWarning(rex, "RAG search falló; se continúa sin contexto.");
                         messages.Add(ChatMessage.CreateSystemMessage(
                             "El contexto no está disponible por un error de recuperación. " +
@@ -264,7 +262,7 @@ namespace KommoAIAgent.Infrastructure.Services
                     if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last))
                     {
                         // Si hay una imagen reciente en cache, reusamos multimodal
-                        ChatComposer.AppendUserTextAndImage(messages, userText, last.  Bytes, last.Mime);
+                        ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
                     else

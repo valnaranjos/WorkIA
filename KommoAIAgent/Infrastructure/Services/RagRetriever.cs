@@ -1,38 +1,38 @@
 ﻿using KommoAIAgent.Application.Interfaces;
 using Microsoft.Extensions.Logging;
 
-namespace KommoAIAgent.Infrastructure.Services;
-
-public interface IRagRetriever
+namespace KommoAIAgent.Infrastructure.Services
 {
-    Task<(List<(string Text, string? Title, float Score)> Hits, float TopScore)> RetrieveAsync(
-        string tenantSlug, string userText, int topK, CancellationToken ct);
-}
-
-public sealed class RagRetriever : IRagRetriever
-{
-    private readonly IEmbedder _embedder;
-    private readonly IKnowledgeStore _kb;
-    private readonly ILogger<RagRetriever> _logger;
-
-    public RagRetriever(IEmbedder embedder, IKnowledgeStore kb, ILogger<RagRetriever> logger)
+    public interface IRagRetriever
     {
-        _embedder = embedder;
-        _kb = kb;
-        _logger = logger;
+        Task<(IReadOnlyList<KbChunkHit> Hits, float TopScore)>
+            RetrieveAsync(string tenantSlug, string userText, int topK, CancellationToken ct);
     }
 
-    public async Task<(List<(string, string?, float)>, float)> RetrieveAsync(
-        string tenantSlug, string userText, int topK, CancellationToken ct)
+
+    public sealed class RagRetriever : IRagRetriever
     {
-        var (embedding, embChars) = await _embedder.EmbedAsync(tenantSlug, userText, ct);
-        var results = await _kb.SearchAsync(tenantSlug, embedding, topK, ct);
-        var list = results.Select(r => (r.Text, r.Title, r.Score)).ToList();
-        var top = list.Count > 0 ? list.Max(h => h.Item3) : 0f;
+        private readonly IEmbedder _embedder;
+        private readonly IKnowledgeStore _kb;
+        private readonly ILogger<RagRetriever> _logger;
 
-        _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000} tenant={Tenant}",
-            list.Count, top, tenantSlug);
+        public RagRetriever(IEmbedder embedder, IKnowledgeStore kb, ILogger<RagRetriever> logger)
+        {
+            _embedder = embedder;
+            _kb = kb;
+            _logger = logger;
+        }
+        public async Task<(IReadOnlyList<KbChunkHit> Hits, float TopScore)>
+            RetrieveAsync(string tenantSlug, string userText, int topK, CancellationToken ct)
+        {
+            // Deja que el store haga el embed interno (así funciona tu PgVectorKnowledgeStore)
+            var hits = await _kb.SearchAsync(tenantSlug, userText, topK, ct: ct);
 
-        return (list, top);
+            var top = (hits.Count > 0) ? hits[0].Score : 0f; // ya vienen ordenados por Score
+            _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}, tenant={Tenant}",
+                hits.Count, top, tenantSlug);
+
+            return (hits, top);
+        }
     }
 }

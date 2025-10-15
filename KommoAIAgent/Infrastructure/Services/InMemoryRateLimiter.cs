@@ -1,6 +1,5 @@
 ﻿using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Tenancy;
-using KommoAIAgent.Infrastructure.Tenancy;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 

@@ -2,7 +2,7 @@
 using KommoAIAgent.Domain.Tenancy;
 using Microsoft.Extensions.Options;
 
-namespace KommoAIAgent.Infrastructure.Tenancy
+namespace KommoAIAgent.Infrastructure.Services
 {
     /// <summary>
     /// Carga la configuración de múltiples tenants desde un archivo JSON. Útil para desarrollo y pruebas.

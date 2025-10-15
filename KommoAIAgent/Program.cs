@@ -1,14 +1,14 @@
 using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Api.Security;
-using KommoAIAgent.Application.Tenancy;
-using KommoAIAgent.Infrastructure;
+using KommoAIAgent.Application.Interfaces;
+using KommoAIAgent.Domain.Tenancy;
+using KommoAIAgent.Infrastructure.Caching;
+using KommoAIAgent.Infrastructure.Knowledge;
+using KommoAIAgent.Infrastructure.Kommo;
 using KommoAIAgent.Infrastructure.Persistence;
-using KommoAIAgent.Infrastructure.Tenancy;
-using KommoAIAgent.Knowledge;
-using KommoAIAgent.Knowledge.Sql;
-using KommoAIAgent.Services;
-using KommoAIAgent.Services.Interfaces;
+using KommoAIAgent.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Pgvector.Npgsql;
 
@@ -104,15 +104,37 @@ builder.Services.AddScoped<IAIUsageTracker, PostgresAIUsageTracker>();
 //Servicio de api key para administración.
 builder.Services.AddScoped<AdminApiKeyFilter>();
 
+//Servicio de RAG (Recuperación Augmentada por IA) que usa el KnowledgeStore y el Embedder, para separación del webhookHandler
+builder.Services.AddScoped<IRagRetriever, RagRetriever>();
 
 //Servicio de catálogo de costes de IA leyendo desde tabla ia_costs en PostgreSQL.
 builder.Services.AddSingleton<IAiCostCatalog, PostgresAiCostCatalog>();
+
+// Servicio de chequeo de salud de tenants en segundo plano, para detectar problemas de configuración en producción.
+builder.Services.AddHostedService<TenantHealthCheckService>();
 
 
 //API Básica
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+
+// -------------------- CORS --------------------
+var allowedOrigins = builder.Configuration
+    .GetSection("AllowedOrigins")
+    .Get<string[]>() ?? ["https://localhost:7000", "https://serticloud.com"];
+
+// Política CORS para permitir solo los orígenes listados en configuración..incluyendo front
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
 
 var app = builder.Build();
 
@@ -135,9 +157,35 @@ app.Use(async (ctx, next) =>
     Console.WriteLine($"<-- {ctx.Response.StatusCode} {ctx.Request.Path}");
 });
 
+
+
+// Logging scope por tenant en cada request (si viene en header)
+app.Use(async (ctx, next) =>
+{
+    var th = ctx.Request.Headers["X-Tenant-Slug"].ToString();
+    var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+
+    using (logger.BeginScope(new Dictionary<string, object?>
+    {
+        ["tenant"] = th
+    }))
+    {
+        await next();
+    }
+});
+
+
 app.UseHttpsRedirection();
 
 app.UseStaticFiles();
+
+// Redirige /admin a /admin/index.html
+app.MapGet("/admin", ctx => {
+ctx.Response.Redirect("/admin/index.html");
+return Task.CompletedTask;
+});
+
+app.UseCors("AllowFrontend");
 
 app.MapControllers();
 
