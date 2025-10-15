@@ -1,4 +1,4 @@
-﻿using KommoAIAgent.Application.Tenancy;
+﻿using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Tenancy;
 using System.IO;
 

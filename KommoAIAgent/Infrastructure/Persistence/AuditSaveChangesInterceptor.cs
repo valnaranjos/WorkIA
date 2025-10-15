@@ -3,6 +3,9 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace KommoAIAgent.Infrastructure.Persistence;
 
+/// <summary>
+/// Auditoría automática de CreatedAt y UpdatedAt en las entidades.
+/// </summary>
 public class AuditSaveChangesInterceptor : SaveChangesInterceptor
 {
     public override InterceptionResult<int> SavingChanges(

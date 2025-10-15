@@ -5,6 +5,9 @@ using Microsoft.Extensions.Configuration;
 
 namespace KommoAIAgent.Infrastructure.Persistence;
 
+/// <summary>
+/// Utilidad para que EF pueda crear el DbContext en tiempo de diseño (migraciones).
+/// </summary>
 public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
 {
     public AppDbContext CreateDbContext(string[] args)

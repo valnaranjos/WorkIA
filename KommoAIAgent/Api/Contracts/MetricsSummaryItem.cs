@@ -12,6 +12,7 @@ public sealed record MetricsSummaryItem(
     decimal EstimatedUsd
 );
 
+// Resumen completo
 public sealed record MetricsSummaryResponse(
     string Tenant,
     DateTime From,
@@ -31,6 +32,7 @@ public sealed record DailyUsageItem(
     decimal EstimatedUsd
 );
 
+// Serie diaria completa
 public sealed record DailyUsageResponse(
     string Tenant,
     DateTime From,
@@ -48,6 +50,7 @@ public sealed record UsageErrorItem(
     string Message
 );
 
+// Respuesta con lista de errores
 public sealed record UsageErrorsResponse(
     string Tenant,
     int Count,

@@ -41,9 +41,11 @@ namespace KommoAIAgent.Api.Contracts
         public string IaModel { get; set; } = "gpt-4o-mini";
 
         [Range(1, 8192)]
+        // Máximo tokens de respuesta (el prompt puede ser más grande).
         public int MaxTokens { get; set; } = 500;
 
         [Range(0, 2)]
+        // Diversidad/creatividad de la respuesta.
         public float Temperature { get; set; } = 0.8f;
 
         [Range(0, 1)]

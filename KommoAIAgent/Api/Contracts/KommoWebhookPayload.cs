@@ -42,6 +42,7 @@ namespace KommoAIAgent.Api.Contracts
         [JsonProperty("entity_type")]
         public string? EntityType { get; set; } // Debería ser "leads".
 
+        //Lista de adjuntos (AttachmentInfo) si los hay
         public List<AttachmentInfo> Attachments { get; set; } = [];
     }
 }
