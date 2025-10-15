@@ -1,4 +1,7 @@
-﻿using Microsoft.Extensions.Caching.Memory;
+﻿using KommoAIAgent.Application.Common;
+using Microsoft.AspNetCore.Builder.Extensions;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using System;
 
 namespace KommoAIAgent.Infrastructure
@@ -12,8 +15,9 @@ namespace KommoAIAgent.Infrastructure
 
         public LastImageCache(IMemoryCache cache) => _cache = cache;
 
-        ///key para almacenar la imagen en caché.
-        public static string ImgKey(long leadId) => $"lastimg:{leadId}";
+
+        ///key para almacenar la imagen en caché con tenant y leadId
+        public static string ImgKey(string tenant, long leadId) => $"lastimg:{tenant}:{leadId}";
 
         // Contexto de la imagen: bytes y tipo MIME.
         public readonly record struct ImageCtx(byte[] Bytes, string Mime);
@@ -24,10 +28,13 @@ namespace KommoAIAgent.Infrastructure
         /// <param name="leadId"></param>
         /// <param name="bytes"></param>
         /// <param name="mime"></param>
-        public void SetLastImage(long leadId, byte[] bytes, string mime)
+        public void SetLastImage(string tenant, long leadId, byte[] bytes, string mime)
         {
-            _cache.Set(ImgKey(leadId), new ImageCtx(bytes, mime),
-                new MemoryCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(3) });
+            _cache.Set(
+                ImgKey(tenant, leadId),
+                new ImageCtx(bytes, mime),
+                new MemoryCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(3) }
+            );
         }
 
         /// <summary>
@@ -36,14 +43,15 @@ namespace KommoAIAgent.Infrastructure
         /// <param name="leadId"></param>
         /// <param name="ctx"></param>
         /// <returns></returns>
-        public bool TryGetLastImage(long leadId, out ImageCtx ctx)
-            => _cache.TryGetValue(ImgKey(leadId), out ctx);
+        public bool TryGetLastImage(string tenant, long leadId, out ImageCtx img)
+        => _cache.TryGetValue(ImgKey(tenant, leadId), out img);
 
 
         /// <summary>
         /// Borra la imagen en caché para un lead específico.
         /// </summary>
         /// <param name="leadId"></param>
-        public void Remove(long leadId) => _cache.Remove(ImgKey(leadId));
+        public void Remove(string tenant, long leadId)
+        => _cache.Remove(ImgKey(tenant, leadId));
     }
 }

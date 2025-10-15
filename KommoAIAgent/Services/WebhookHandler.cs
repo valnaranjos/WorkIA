@@ -7,6 +7,8 @@ using KommoAIAgent.Knowledge;
 using KommoAIAgent.Services.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using OpenAI.Chat;
+using System.Collections.Generic;
+using System.Net.Mail;
 using System.Text;
 
 namespace KommoAIAgent.Services
@@ -167,7 +169,7 @@ namespace KommoAIAgent.Services
 
 
                     // Guardar en caché la última imagen para este lead
-                    _lastImage.SetLastImage(leadId, bytes, mime);
+                    _lastImage.SetLastImage(tenantSlug, leadId, bytes, mime);
 
                     // Prompt por defecto si la imagen viene sin texto
                     var prompt = string.IsNullOrWhiteSpace(userText)
@@ -265,10 +267,10 @@ namespace KommoAIAgent.Services
                     }
 
                     //  Finalmente añadimos el mensaje del usuario y pedimos a la IA
-                    if (_lastImage.TryGetLastImage(leadId, out var last))
+                    if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last))
                     {
                         // Si hay una imagen reciente en cache, reusamos multimodal
-                        ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
+                        ChatComposer.AppendUserTextAndImage(messages, userText, last.  Bytes, last.Mime);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
                     else
