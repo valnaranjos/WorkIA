@@ -1,6 +1,5 @@
 ﻿using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Infrastructure.Services;
-using KommoAIAgent.Infrastructure.Tenancy;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 

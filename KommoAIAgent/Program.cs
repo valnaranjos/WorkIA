@@ -162,12 +162,12 @@ app.Use(async (ctx, next) =>
 // Logging scope por tenant en cada request (si viene en header)
 app.Use(async (ctx, next) =>
 {
-    var th = ctx.Request.Headers["X-Tenant-Slug"].ToString();
+    var reqId = ctx.TraceIdentifier;
     var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
 
     using (logger.BeginScope(new Dictionary<string, object?>
     {
-        ["tenant"] = th
+        ["requestId"] = reqId
     }))
     {
         await next();

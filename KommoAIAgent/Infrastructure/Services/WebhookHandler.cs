@@ -1,6 +1,7 @@
 ﻿using KommoAIAgent.Api.Contracts;
 using KommoAIAgent.Application.Common;
 using KommoAIAgent.Application.Interfaces;
+using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Infrastructure.Caching;
 using Microsoft.Extensions.Caching.Memory;
 using OpenAI.Chat;
@@ -26,6 +27,9 @@ namespace KommoAIAgent.Infrastructure.Services
         private readonly ITenantContext _tenant;
         private readonly IRateLimiter _limiter;
         private readonly IRagRetriever _ragRetriever;
+        private readonly ITokenBudget _tokenBudget;
+
+
 
         public WebhookHandler(
             IKommoApiService kommoService,
@@ -38,7 +42,8 @@ namespace KommoAIAgent.Infrastructure.Services
             LastImageCache lastImage,
             ITenantContext tenant,
             IRateLimiter limiter,
-            IRagRetriever ragRetriever
+            IRagRetriever ragRetriever,
+            ITokenBudget tokenBudget
             )
         {
             _kommoService = kommoService;
@@ -52,6 +57,7 @@ namespace KommoAIAgent.Infrastructure.Services
             _tenant = tenant;
             _limiter = limiter;
             _ragRetriever = ragRetriever;
+            _tokenBudget = tokenBudget;
         }
 
         /// <summary>
@@ -153,6 +159,8 @@ namespace KommoAIAgent.Infrastructure.Services
                 var messages = await ChatComposer.BuildHistoryMessagesAsync(
                 _conv, _tenant, leadId, historyTurns: 10, ct);
 
+
+                var inputEstimate = AiUtil.EstimateTokens(string.Join("\n", messages.Select(m => m.Content?.ToString() ?? string.Empty)));
                 string aiResponse;
 
                 var img = attachments?.FirstOrDefault(AttachmentHelper.IsImage);
@@ -174,6 +182,18 @@ namespace KommoAIAgent.Infrastructure.Services
                         : userText;
 
                     ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
+
+                    // ---- GUARDRAIL: presupuesto antes de invocar IA (multimodal) ----
+                    var estTotalImg = inputEstimate + 600; // 600 = el mismo maxTokens que usarás abajo
+                    if (!await _tokenBudget.CanConsumeAsync(_tenant, estTotalImg, ct))
+                    {
+                        const string budgetMsg = "He alcanzado el presupuesto de uso asignado. Intentémoslo más tarde.";
+                        await _conv.AppendAssistantAsync(_tenant, leadId, budgetMsg, ct);
+                        await _kommoService.UpdateLeadMensajeIAAsync(
+                            leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), CancellationToken.None);
+                        _logger.LogWarning("Budget guardrail (imagen) tenant={Tenant} estTokens={Est}", _tenant.CurrentTenantId, estTotalImg);
+                        return;
+                    }
                     aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
 
                     await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
@@ -269,6 +289,18 @@ namespace KommoAIAgent.Infrastructure.Services
                     {
                         // Solo texto
                         ChatComposer.AppendUserText(messages, userText);
+
+                        // ---- GUARDRAIL: presupuesto antes de invocar IA (texto) ----
+                        var estTotalText = inputEstimate + 400; // 400 = el mismo maxTokens que usarás abajo
+                        if (!await _tokenBudget.CanConsumeAsync(_tenant, estTotalText, ct))
+                        {
+                            const string budgetMsg = "He alcanzado el presupuesto de uso asignado. Intentémoslo más tarde.";
+                            await _conv.AppendAssistantAsync(_tenant, leadId, budgetMsg, ct);
+                            await _kommoService.UpdateLeadMensajeIAAsync(
+                                leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), CancellationToken.None);
+                            _logger.LogWarning("Budget guardrail (texto) tenant={Tenant} estTokens={Est}", _tenant.CurrentTenantId, estTotalText);
+                            return;
+                        }
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400, model: null, ct);
                     }
 

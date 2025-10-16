@@ -1,5 +1,6 @@
 ﻿using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Kommo;
+using KommoAIAgent.Infrastructure.Common;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Net;
@@ -106,49 +107,33 @@ namespace KommoAIAgent.Infrastructure.Kommo
             _logger.LogInformation("PATCH (unitario) lead {LeadId} field {FieldId} (tenant={Tenant})",
                 leadId, fieldId, _tenant.CurrentTenantId);
 
-            // -------- Primer intento --------
-            using (var req1 = CreatePatchRequest())
-            using (var res1 = await _httpClient.SendAsync(req1))
+            // -------- Envío con retry/backoff robusto --------
+            //Con retry porque Kommo a veces falla con 401 o 5xx en llamadas rápidas, helper Retry.DoAsync.
+            await Retry.DoAsync(async () =>
             {
-                var body1 = await res1.Content.ReadAsStringAsync();
+                using var req = CreatePatchRequest();
+                using var res = await _httpClient.SendAsync(req);
 
-                if (res1.IsSuccessStatusCode)
+                var body = await res.Content.ReadAsStringAsync();
+
+                if (res.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation("PATCH unitario OK (lead={LeadId}, field={FieldId}) → {Body}",
-                        leadId, fieldId, body1);
-                }
-                else if (res1.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    // -------- Retry breve solo si 401 --------
-                    _logger.LogWarning("PATCH 401 (lead={LeadId}, field={FieldId}, tenant={Tenant}) → retry breve",
-                        leadId, fieldId, _tenant.CurrentTenantId);
-
-                    await Task.Delay(150); // pequeña espera para alternancias rápidas entre tenants
-
-                    using var req2 = CreatePatchRequest();
-                    using var res2 = await _httpClient.SendAsync(req2);
-                    var body2 = await res2.Content.ReadAsStringAsync();
-
-                    if (res2.IsSuccessStatusCode)
-                    {
-                        _logger.LogInformation("PATCH unitario OK tras retry (lead={LeadId}, field={FieldId}) → {Body}",
-                            leadId, fieldId, body2);
-                    }
-                    else
-                    {
-                        _logger.LogError("PATCH 401 tras retry (lead={LeadId}, field={FieldId}, tenant={Tenant}) → {Body}",
-                            leadId, fieldId, _tenant.CurrentTenantId, body2);
-                        return;
-                    }
-                }
-                else
-                {
-                    _logger.LogError("PATCH unitario error {Status} (lead={LeadId}, field={FieldId}, tenant={Tenant}) → {Body}",
-                        (int)res1.StatusCode, leadId, fieldId, _tenant.CurrentTenantId, body1);
+                    _logger.LogInformation("PATCH OK (lead={LeadId}, field={FieldId}) → {Body}",
+                        leadId, fieldId, body);
                     return;
                 }
-            }
 
+                if (res.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    _logger.LogWarning("PATCH 401 (lead={LeadId}, field={FieldId}, tenant={Tenant})",
+                        leadId, fieldId, _tenant.CurrentTenantId);
+                    throw new HttpRequestException($"401 Unauthorized (tenant={_tenant.CurrentTenantId})");
+                }
+
+                _logger.LogError("PATCH error {Status} (lead={LeadId}, field={FieldId}) → {Body}",
+                    (int)res.StatusCode, leadId, fieldId, body);
+                throw new HttpRequestException($"Kommo PATCH failed ({res.StatusCode})");
+            }, _logger);
 
 
             // -------- Verificación con 3 reintentos (200ms, 700ms, 1500ms) --------

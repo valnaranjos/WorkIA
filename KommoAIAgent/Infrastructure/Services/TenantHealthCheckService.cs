@@ -1,6 +1,8 @@
-﻿using KommoAIAgent.Application.Interfaces;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using KommoAIAgent.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
+using KommoAIAgent.Application.Interfaces;
 
 namespace KommoAIAgent.Infrastructure.Services;
 
@@ -8,31 +10,55 @@ public sealed class TenantHealthCheckService : BackgroundService
 {
     private readonly IServiceProvider _sp;
     private readonly ILogger<TenantHealthCheckService> _logger;
+
     public TenantHealthCheckService(IServiceProvider sp, ILogger<TenantHealthCheckService> logger)
-    { _sp = sp; _logger = logger; }
+    {
+        _sp = sp; _logger = logger;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Primer chequeo tras inicio
+        await RunOnce(stoppingToken);
+
+        // Cada 24h
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
-            {
-                using var scope = _sp.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var tenants = await db.Tenants.Where(t => t.IsActive).ToListAsync(stoppingToken);
+            await Task.Delay(TimeSpan.FromHours(24), stoppingToken);
+            await RunOnce(stoppingToken);
+        }
+    }
 
-                foreach (var t in tenants)
+    private async Task RunOnce(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _sp.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var ai = scope.ServiceProvider.GetRequiredService<IAiService>();
+            var tenants = await db.Tenants.Where(t => t.IsActive).ToListAsync(ct);
+
+            foreach (var t in tenants)
+            {
+                try
                 {
-                    // TODO: prueba corta a Kommo (GET perfil) y a OpenAI (models list o tiny embed)
-                    _logger.LogInformation("HealthCheck tenant={Slug} OK (placeholder)", t.Slug);
+                    // ping IA (rápido y barato)
+                    await ai.PingAsync();
+
+                    // TODO: ping Kommo si quieres (GET /api/v4/account) con KommoApiService
+                    // await kommo.PingAsync(t.Slug, ct);
+
+                    _logger.LogInformation("Health OK tenant={Slug}", t.Slug);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Health FAIL tenant={Slug}", t.Slug);
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Tenant health check error");
-            }
-
-            await Task.Delay(TimeSpan.FromHours(24), stoppingToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "HealthCheck global error");
         }
     }
 }
