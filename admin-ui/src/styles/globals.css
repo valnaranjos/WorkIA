@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0c0d10;
+  --card: #121318;
+  --muted: #9aa2b1;
+}
+
+body {
+  @apply bg-neutral-950 text-neutral-100;
+}
