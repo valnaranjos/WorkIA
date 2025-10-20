@@ -1,0 +1,134 @@
+## =========================
+## Visual Studio (general)
+## =========================
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vsidx
+*.vshost.*
+*.db-shm
+*.db-wal
+*.db
+
+## =========================
+## Archivos temporales / compilaci�n
+## =========================
+bin/
+obj/
+out/
+[Bb]uild/
+[Ll]ogs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+## =========================
+## Archivos de evaluaci�n / �ndices
+## =========================
+ProjectEvaluation/
+CopilotIndices/
+.vsconfig
+*.VC.db
+
+## =========================
+## IDEs / JetBrains / VSCode
+## =========================
+.idea/
+.vscode/
+.vscode/*
+*.code-workspace
+
+## =========================
+## Archivos de sistema y temporales
+## =========================
+*.dbmdl
+*.bak
+*.log
+*.tmp
+*.temp
+*.cache
+*.pdb
+*.mdb
+*.opendb
+*.pidb
+*.svclog
+
+## =========================
+## Paquetes NuGet
+## =========================
+*.nupkg
+*.snupkg
+*.nuspec
+*.psmdcp
+.packages/
+packages/
+*.nuget.props
+*.nuget.targets
+
+## =========================
+## Configuraci�n espec�fica de usuario
+## =========================
+*.rsuser
+*.userprefs
+
+## =========================
+## Publicaci�n / Build
+## =========================
+*.Publish.xml
+publish/
+PublishProfiles/
+*.pubxml
+*.pubxml.user
+
+## =========================
+## IIS / Web / Configs locales
+## =========================
+*.vspscc
+*.vssscc
+wwwroot/
+node_modules/
+dist/
+.env
+.env.local
+.env.development
+.env.production
+
+## =========================
+## Tests / Cobertura / Migraciones
+## =========================
+TestResult*/
+*.VisualState.xml
+*.TestCase.json
+*.coverage
+*.coveragexml
+Migrations/
+
+## =========================
+## Archivos secretos / locales
+## =========================
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+*.secret.json
+
+## =========================
+## Archivos OS (Windows/Mac/Linux)
+## =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+## =========================
+## Rider / ReSharper
+## =========================
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
