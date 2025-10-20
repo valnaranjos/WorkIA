@@ -6,6 +6,7 @@ import MetricsView from "./views/MetricsView";
 import Toaster from "./components/Toaster";
 import DashboardView from "./views/DashboardView";
 import LogsView from "./views/LogsView";
+import CostsView from "./views/CostsView";
 
 export default function App() {
   const [section, setSection] = useState("dashboard"); // 'dashboard' | 'tenants' | 'kb' | 'metrics' | 'logs'
@@ -19,6 +20,7 @@ export default function App() {
         <NavItem label="Tenants" active={section==='tenants'} onClick={()=>setSection('tenants')} />
         <NavItem label="Knowledge Base" active={section==='kb'} onClick={()=>setSection('kb')} />
         <NavItem label="Métricas" active={section==='metrics'} onClick={()=>setSection('metrics')} />
+          <NavItem label="Costos IA" active={section==='costs'} onClick={()=>setSection('costs')} />
        <NavItem label="Logs" active={section==='logs'} onClick={()=>setSection('logs')} />
       </aside>
 
@@ -28,6 +30,7 @@ export default function App() {
         {section === 'kb' && <KnowledgeView />}
         {section === 'metrics' && <MetricsView />}
          {section === 'dashboard' && <DashboardView />} 
+         {section==='costs' && <CostsView />}
          {section === 'logs'      && <LogsView />}
       </main>
 

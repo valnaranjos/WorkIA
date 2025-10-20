@@ -224,35 +224,44 @@ class ApiClient {
     return this.request(`/admin/metrics/daily?tenant=${tenant}&days=${days}`);
   }
 
-  getErrors({ tenant, severity, from, to, page = 1, pageSize = 50 } = {}) {
-    const query = new URLSearchParams({
-      ...(tenant && { tenant }),
-      ...(severity && { severity }),
-      ...(from && { from: from.toISOString() }),
-      ...(to && { to: to.toISOString() }),
-      page: String(page),
-      pageSize: String(pageSize)
-    });
-    return this.request(`/admin/metrics/errors?${query}`);
-  }
+ getLogs({ tenant, from, to, page = 1, size = 20, q = "" }) {
+  const params = new URLSearchParams();
+  if (tenant) params.set("tenant", tenant);
+  if (from instanceof Date) params.set("from", from.toISOString());
+  if (to   instanceof Date) params.set("to",   to.toISOString());
+  if (page) params.set("page", String(page));
+  if (size) params.set("size", String(size));
+  if (q && q.trim()) params.set("q", q.trim());
+
+  return this.request(`/admin/logs?${params.toString()}`);
+}
 
   // ========== COSTOS IA ==========
   getCosts() {
     return this.request('/admin/metrics/costs');
   }
 
-  upsertCost(data) {
-    return this.request('/admin/metrics/costs', { 
-      method: 'PUT', 
-      body: JSON.stringify(data) 
-    });
-  }
+  
+// Crear/Actualizar (PUT upsert)
+saveCost({ provider, model, inputPer1K, outputPer1K, embPer1KTokens }) {
+  return this.request(`/admin/metrics/costs`, {
+    method: "PUT",
+    body: JSON.stringify({
+      provider,
+      model,
+      inputPer1K: Number(inputPer1K ?? 0),
+      outputPer1K: Number(outputPer1K ?? 0),
+      embPer1KTokens: Number(embPer1KTokens ?? 0),
+    }),
+  });
+}
 
   deleteCost(provider, model) {
-    return this.request(`/admin/metrics/costs/${provider}/${model}`, { 
-      method: 'DELETE' 
-    });
-  }
+  return this.request(
+    `/admin/metrics/costs/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`,
+    { method: "DELETE" }
+  );
+}
 
   // ========== DIAGNOSTICS ==========
   getHealthLive() {
@@ -273,16 +282,8 @@ class ApiClient {
 
   getTenantWhoAmI(slug) {
     return this.request(`/t/${slug}/__whoami`);
-  }
-
-  
- // IA error logs por tenant
-  getIaErrors({ slug, limit = 50 }) {
-    const p = new URLSearchParams();
-    p.set("tenant", slug);
-    p.set("limit", String(Math.max(1, Math.min(limit, 500))));
-    return this.request(`/admin/metrics/errors?${p.toString()}`);
-  }
+  } 
+ 
 }
 
 export default new ApiClient();
