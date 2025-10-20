@@ -224,16 +224,12 @@ class ApiClient {
     return this.request(`/admin/metrics/daily?tenant=${tenant}&days=${days}`);
   }
 
- getLogs({ tenant, from, to, page = 1, size = 20, q = "" }) {
+getLogs({ tenant, limit = 50 }) {
   const params = new URLSearchParams();
   if (tenant) params.set("tenant", tenant);
-  if (from instanceof Date) params.set("from", from.toISOString());
-  if (to   instanceof Date) params.set("to",   to.toISOString());
-  if (page) params.set("page", String(page));
-  if (size) params.set("size", String(size));
-  if (q && q.trim()) params.set("q", q.trim());
-
-  return this.request(`/admin/logs?${params.toString()}`);
+  params.set("limit", String(limit));
+  
+  return this.request(`/admin/metrics/errors?${params.toString()}`);
 }
 
   // ========== COSTOS IA ==========

@@ -1,119 +1,146 @@
-# KommoAI Admin Panel
+# 🎨 KommoAI Admin UI
 
-Panel de administración para el agente de IA multitenant conectado a Kommo.
+Panel de administración para KommoAI Agent - Gestión de tenants, knowledge base y métricas.
 
-## 🚀 Setup Rápido
+## 🚀 Tech Stack
 
-### 1. Instalar dependencias
+- **React 18** - UI Library
+- **Vite** - Build tool & dev server
+- **Tailwind CSS** - Styling
+- **Fetch API** - HTTP client
+
+## 📋 Requisitos
+
+- Node.js 18+ o 20+
+- npm 9+ o yarn
+- Backend corriendo en `https://localhost:7000`
+
+## 🛠️ Instalación
 
 ```bash
+# 1. Instalar dependencias
 npm install
-```
 
-### 2. Configurar variables de entorno
+# 2. Configurar variables de entorno
+cp .env.example .env
+# Editar .env y configurar VITE_ADMIN_API_KEY
 
-Crea un archivo `.env` en la raíz del proyecto:
-
-```env
-VITE_API_URL=https://localhost:7000
-VITE_ADMIN_API_KEY=tu-admin-key-aqui
-```
-
-### 3. Ejecutar en desarrollo
-
-```bash
+# 3. Ejecutar en desarrollo
 npm run dev
 ```
 
-La aplicación estará disponible en `http://localhost:5173`
+El admin UI estará disponible en: `http://localhost:5174`
 
-## 📦 Dependencias
+## 🏗️ Build para producción
 
-```json
-{
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.22.0",
-    "recharts": "^2.12.0",
-    "lucide-react": "^0.263.1"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.1.0",
-    "tailwindcss": "^3.4.1",
-    "postcss": "^8.4.35",
-    "autoprefixer": "^10.4.17"
-  }
+```bash
+# Generar build optimizado
+npm run build
+
+# El output estará en ./dist/
+# Puedes servir con:
+npm run preview
+```
+
+## 📁 Estructura
+
+```
+admin-ui/
+├── src/
+│   ├── components/      # Componentes reutilizables (Modal, Toaster)
+│   ├── views/          # Vistas principales (Tenants, KB, Metrics, etc)
+│   ├── lib/
+│   │   └── api.js      # Cliente HTTP para backend
+│   ├── App.jsx         # Componente raíz con navegación
+│   ├── main.jsx        # Entry point
+│   └── index.css       # Tailwind imports
+├── index.html
+├── vite.config.js
+├── tailwind.config.js
+└── package.json
+```
+
+## 🔐 Configuración
+
+### Variables de entorno
+
+Crea `.env` con:
+
+```bash
+# API Backend (vacío en dev, URL completa en prod)
+VITE_API_URL=
+
+# Admin API Key (debe coincidir con el backend)
+VITE_ADMIN_API_KEY=tu-api-key-aqui
+```
+
+### Proxy en desarrollo
+
+El `vite.config.js` ya tiene configurado un proxy hacia el backend local:
+
+```javascript
+proxy: {
+  '/admin': { target: 'https://localhost:7000' },
+  '/kb': { target: 'https://localhost:7000' },
+  '/t': { target: 'https://localhost:7000' },
+  '/health': { target: 'https://localhost:7000' },
 }
 ```
 
-## 🏗️ Estructura del Proyecto
+## 🧪 Testing local
 
-```
-src/
-├── components/
-│   ├── Layout/
-│   │   ├── Sidebar.jsx
-│   │   └── Header.jsx
-│   ├── Tenants/
-│   │   ├── TenantList.jsx
-│   │   ├── TenantForm.jsx
-│   │   └── TenantDetail.jsx
-│   ├── KnowledgeBase/
-│   │   ├── KbList.jsx
-│   │   └── KbUpload.jsx
-│   ├── Metrics/
-│   │   ├── MetricsSummary.jsx
-│   │   ├── DailyUsage.jsx
-│   │   └── CostManagement.jsx
-│   └── Logs/
-│       └── ErrorLogs.jsx
-├── lib/
-│   ├── api.js          # Cliente API
-│   └── utils.js        # Utilidades
-├── App.jsx
-├── main.jsx
-└── index.css
-```
+1. Backend corriendo: `dotnet run` (puerto 7000)
+2. Frontend corriendo: `npm run dev` (puerto 5174)
+3. Abrir: `http://localhost:5174`
+4. Login con tu `VITE_ADMIN_API_KEY`
 
-## 🎨 Features
+## 📦 Deployment
 
-- ✅ CRUD completo de Tenants
-- ✅ Gestión de Knowledge Base por tenant
-- ✅ Visualización de métricas y uso de IA
-- ✅ Gestión de costos de IA
-- ✅ Vista de logs y errores
-- ✅ Diseño responsive y minimalista
-- ✅ Gráficos interactivos
-
-## 🔐 Seguridad
-
-- La API Key se maneja mediante variable de entorno
-- Nunca se almacena en localStorage
-- Se envía en cada request mediante header `X-Admin-Key`
-
-## 🚢 Deploy a Producción
-
-### Variables de entorno en producción:
-
-```env
-VITE_API_URL=https://api.tudominio.com
-VITE_ADMIN_API_KEY=tu-admin-key-produccion
-```
-
-### Build:
+### Opción A: Servir desde .NET (wwwroot)
 
 ```bash
+# 1. Build del frontend
 npm run build
+
+# 2. Copiar dist/ a wwwroot del backend
+cp -r dist/* ../KommoAIAgent/wwwroot/admin/
+
+# 3. El backend servirá el admin en /admin
 ```
 
-Los archivos estáticos se generarán en la carpeta `dist/`
-
-## 📝 Comandos
+### Opción B: S3 + CloudFront (separado)
 
 ```bash
-npm run dev      # Desarrollo
-npm run build    # Build para producción
-npm run preview  # Preview del build
+# 1. Build con URL de producción
+VITE_API_URL=https://api.tudominio.com npm run build
+
+# 2. Deploy a S3
+aws s3 sync dist/ s3://your-bucket/admin/ --delete
+
+# 3. Invalidar CloudFront
+aws cloudfront create-invalidation --distribution-id XYZ --paths "/admin/*"
 ```
+
+## 🐛 Troubleshooting
+
+### Error: "Failed to fetch"
+- Verifica que el backend esté corriendo
+- Verifica que `VITE_ADMIN_API_KEY` sea correcta
+- Revisa la consola del navegador
+
+### Error: 401 Unauthorized
+- Tu `VITE_ADMIN_API_KEY` no coincide con la del backend
+- Verifica `Admin:ApiKey` en `appsettings.json`
+
+### Tailwind no funciona
+```bash
+rm -rf node_modules dist
+npm install
+npm run dev
+```
+
+## 📚 Recursos
+
+- [React Docs](https://react.dev)
+- [Vite Docs](https://vitejs.dev)
+- [Tailwind CSS Docs](https://tailwindcss.com)

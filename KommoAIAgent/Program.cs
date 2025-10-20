@@ -15,6 +15,8 @@ using Pgvector.Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.UseUrls("https://localhost:7000");
+builder.Services.AddHealthChecks();
 
 // -------------------- MultiTenancy --------------------
 builder.Services.Configure<MultiTenancyOptions>(
@@ -133,7 +135,7 @@ builder.Services.AddSwaggerGen();
 // -------------------- CORS --------------------
 var allowedOrigins = builder.Configuration
     .GetSection("AllowedOrigins")
-    .Get<string[]>() ?? ["http://localhost:5173", "https://localhost:7000"];
+    .Get<string[]>() ?? ["http://localhost:5174", "https://localhost:7000"];
 
 builder.Services.AddCors(options =>
 {
