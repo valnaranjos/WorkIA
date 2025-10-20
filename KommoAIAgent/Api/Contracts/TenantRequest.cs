@@ -171,4 +171,37 @@ namespace KommoAIAgent.Api.Contracts
         string SystemPrompt,
         string? BusinessRulesJson
     );
+
+
+    // ========= RESPONSE (DETALLE) =========
+    //Para enviar toda la info del tenant (Admin), incluyendo token y configuración IA.
+    public sealed record TenantDetailResponse(
+        Guid Id,
+        string Slug,
+        string DisplayName,
+        bool IsActive,
+        string KommoBaseUrl,
+
+        // Kommo
+        string? KommoAccessToken,
+        long? KommoMensajeIaFieldId,
+        string? KommoScopeId,
+
+        // IA
+        string IaProvider,
+        string IaModel,
+        float? Temperature,
+        float? TopP,
+        int? MaxTokens,
+
+        // Presupuestos / alertas
+        int MonthlyTokenBudget,
+        double AlertThresholdPct,
+        DateTime CreatedAt,
+        DateTime UpdatedAt,
+
+        // Contenido
+        string SystemPrompt,
+        string? BusinessRulesJson
+    );
 }

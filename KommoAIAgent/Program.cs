@@ -128,9 +128,9 @@ var allowedOrigins = builder.Configuration
 // Política CORS para permitir solo los orígenes listados en configuración..incluyendo front
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend", policy =>
+    options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(allowedOrigins)
+        policy.WithOrigins("http://localhost:5173")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });

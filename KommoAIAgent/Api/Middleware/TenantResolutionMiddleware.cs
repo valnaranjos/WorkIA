@@ -48,6 +48,7 @@ namespace KommoAIAgent.Api.Middleware
             path.StartsWith("/favicon") ||
             path.StartsWith("/assets") ||
             path.StartsWith("/css") ||
+            path.StartsWith("/api/admin") ||
             path.StartsWith("/js"))
             {
                 await _next(http);

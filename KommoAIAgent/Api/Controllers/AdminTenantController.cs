@@ -37,17 +37,18 @@ public class AdminTenantsController : ControllerBase
     }
 
     /// <summary>
-    /// Obtiene un tenant por su subdominio, devuelve 404 si no existe,
+    /// Obtiene un tenant por su subdominio, devuelve 404 si no existe
+    /// GET /admin/admintenants/by-slug/{slug}
     /// </summary>
-    /// <param name="id"></param>
+    /// <param name="slug"></param>
     /// <returns></returns>
     [HttpGet("by-slug/{slug}")]
-    public async Task<ActionResult<TenantResponse>> GetBySlug(string slug)
+    public async Task<ActionResult<TenantDetailResponse>> GetBySlug(string slug)
     {
         if (!SlugRx.IsMatch(slug)) return BadRequest("Slug inválido (usa a-z, 0-9 y guiones).");
 
         var t = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(x => x.Slug == slug);
-        return t is null ? NotFound() : ToResponse(t);
+        return t is null ? NotFound() : ToDetailResponse(t);
     }
 
     /// <summary>
@@ -310,6 +311,50 @@ public class AdminTenantsController : ControllerBase
             updated,
             t.SystemPrompt ?? string.Empty,
             t.BusinessRulesJson // lo devolvemos RAW; el front decide si parsea
+        );
+    }
+
+
+
+    /// <summary>
+    /// Forma detallada de un tenant.
+    /// </summary>
+    /// <param name="t"></param>
+    /// <returns></returns>
+    private static TenantDetailResponse ToDetailResponse(Tenant t)
+    {
+        // Si guardas AlertThreshold como porcentaje (80), lo mapeas igual;
+        // si internamente es fracción (0.8), multiplícalo por 100.
+        var updated = t.UpdatedAt ?? t.CreatedAt;
+
+        return new TenantDetailResponse(
+            t.Id,
+            t.Slug,
+            t.DisplayName,
+            t.IsActive,
+            t.KommoBaseUrl,
+
+            // Kommo
+            t.KommoAccessToken,
+            t.KommoMensajeIaFieldId,
+            t.KommoScopeId,
+
+            // IA
+            t.IaProvider,
+            t.IaModel,
+            t.Temperature,
+            t.TopP,
+            t.MaxTokens,
+
+            // Presupuestos / alertas
+            t.MonthlyTokenBudget,
+            t.AlertThresholdPct,
+            t.CreatedAt,
+            updated,
+
+            // Texto / reglas
+            t.SystemPrompt ?? string.Empty,
+            t.BusinessRulesJson
         );
     }
 }
