@@ -1,11 +1,16 @@
-..................## Visual Studio (general)
+## =========================
+## Visual Studio (general)
+## =========================
 .vs/
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
+*.vsidx
 
-## Archivos temporales de compilación
+## =========================
+## Archivos temporales / compilación
+## =========================
 bin/
 obj/
 out/
@@ -13,15 +18,30 @@ out/
 [Ll]ogs/
 [Dd]ebug/
 [Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
 
-## Archivos de evaluación/índices
+## =========================
+## Archivos de evaluación / índices
+## =========================
 ProjectEvaluation/
 CopilotIndices/
+.vsconfig
+*.VC.db
 
-## Archivos de Rider / JetBrains
+## =========================
+## IDEs / JetBrains / VSCode
+## =========================
 .idea/
+.vscode/
+.vscode/*
+*.code-workspace
 
-## Archivos de sistema
+## =========================
+## Archivos de sistema y temporales
+## =========================
 *.dbmdl
 *.bak
 *.log
@@ -31,9 +51,12 @@ CopilotIndices/
 *.pdb
 *.mdb
 *.opendb
-*.VC.db
+*.pidb
+*.svclog
 
-## Archivos de paquetes NuGet
+## =========================
+## Paquetes NuGet
+## =========================
 *.nupkg
 *.snupkg
 *.nuspec
@@ -43,47 +66,65 @@ packages/
 *.nuget.props
 *.nuget.targets
 
-## Configuración específica de usuario de VS
+## =========================
+## Configuración específica de usuario
+## =========================
 *.rsuser
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
+*.userprefs
 
-## Archivos de publicación
+## =========================
+## Publicación / Build
+## =========================
 *.Publish.xml
 publish/
+PublishProfiles/
+*.pubxml
+*.pubxml.user
 
-## Configuración de IIS Express
-.vscode/
-.vscode/*
+## =========================
+## IIS / Web / Configs locales
+## =========================
 *.vspscc
 *.vssscc
+wwwroot/
+node_modules/
+dist/
+.env
+.env.local
+.env.development
+.env.production
 
-## Archivos de test
+## =========================
+## Tests / Cobertura / Migraciones
+## =========================
 TestResult*/
 *.VisualState.xml
 *.TestCase.json
-
-## Archivos de cobertura
 *.coverage
 *.coveragexml
-
-## Archivos de migraciones (si usas EF Core)
 Migrations/
 
+## =========================
 ## Archivos secretos / locales
+## =========================
 appsettings.Development.json
 appsettings.Local.json
 secrets.json
+*.secret.json
 
+## =========================
 ## Archivos OS (Windows/Mac/Linux)
+## =========================
 .DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+$RECYCLE.BIN/
+*.lnk
 
-## Archivos de Rider / ReSharper
+## =========================
+## Rider / ReSharper
+## =========================
 _ReSharper*/
 *.[Rr]e[Ss]harper
 *.DotSettings.user
