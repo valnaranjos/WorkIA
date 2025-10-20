@@ -154,14 +154,12 @@ public sealed class OpenAIEmbeddingService : IEmbedder
         var provider = AiUtil.ProviderId(_tenant.Config);
         var ttl = AiUtil.GetCacheTtl(_tenant.Config);
 
-
         var result = new float[texts.Count][];
         var memKeys = new string[texts.Count];
         var hashes = new string[texts.Count];
 
-        var missIdx = new List<int>(texts.Count);  // faltantes tras memoria
-        var missIdx2 = new List<int>(texts.Count);  // faltantes tras DB
-
+        var missIdx = new List<int>(texts.Count);
+        var missIdx2 = new List<int>(texts.Count);
 
         // Memoria
         for (int i = 0; i < texts.Count; i++)
@@ -199,27 +197,48 @@ public sealed class OpenAIEmbeddingService : IEmbedder
             var inputs = new List<string>(missIdx2.Count);
             foreach (var i in missIdx2) inputs.Add(texts[i]);
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(20)); // timeout defensivo
+            // 🔧 FIX: Timeout DINÁMICO según tamaño del batch
+            var baseTimeout = 20; // segundos base
+            var timeoutPerItem = 2; // +2s por cada texto adicional
+            var totalTimeout = baseTimeout + (missIdx2.Count * timeoutPerItem);
+            totalTimeout = Math.Min(totalTimeout, 120); // máximo 2 minutos
+
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(totalTimeout));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
             float[][] missVecs;
             try
             {
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+                _logger.LogInformation(
+                    "Embeddings -> provider (batch) tenant={Tenant} misses={Count} timeout={Timeout}s",
+                    slug, missIdx2.Count, totalTimeout
+                );
 
-                _logger.LogInformation("Embeddings -> provider (batch) tenant={Tenant} misses={Count}",
-                    slug, missIdx2.Count);
                 missVecs = await _provider.EmbedBatchAsync(inputs, linkedCts.Token);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                _logger.LogWarning("Batch embedding cancelado (tenant={Tenant})", slug);
+                _logger.LogWarning("Batch embedding cancelado por request (tenant={Tenant})", slug);
                 throw;
+            }
+            catch (OperationCanceledException oce)
+            {
+                // Timeout del batch
+                try
+                {
+                    await _usage.TrackErrorAsync(slug, provider, Model, ct);
+                    await _usage.LogErrorAsync(slug, provider, Model, "embeddings.batch.timeout",
+                        oce.Message, new { count = missIdx2.Count, timeout = totalTimeout }, ct);
+                }
+                catch { }
+
+                _logger.LogWarning(oce, "Timeout en batch embedding tras {Timeout}s (tenant={Tenant}, count={Count})",
+                    totalTimeout, slug, missIdx2.Count);
+                throw new TimeoutException($"Batch timeout tras {totalTimeout}s (count={missIdx2.Count}, tenant={slug})");
             }
             catch (Exception ex)
             {
-                // 🔴 cualquier otro error en batch
+                // Cualquier otro error
                 try
                 {
                     await _usage.TrackErrorAsync(slug, provider, Model, ct);
@@ -231,25 +250,20 @@ public sealed class OpenAIEmbeddingService : IEmbedder
                 _logger.LogError(ex, "Error en batch embedding (tenant={Tenant}, count={Count})", slug, missIdx2.Count);
                 throw;
             }
-            // ==============================
-            //Guardar y cachear
 
+            // Guardar y cachear
             for (int j = 0; j < missIdx2.Count; j++)
             {
                 var i = missIdx2[j];
                 var vec = missVecs[j];
 
                 result[i] = vec;
-
-                // Persistir y cachear
                 await _dbCache.PutAsync(slug, provider, Model, hashes[i], vec, ct);
                 _cache.Set(memKeys[i], vec, ttl);
             }
 
             // Métrica: SOLO de los MISS
-            var chars = 0;
-            foreach (var s in inputs) chars += s?.Length ?? 0;
-
+            var chars = inputs.Sum(s => s?.Length ?? 0);
             await _usage.TrackEmbeddingAsync(slug, provider, Model, chars, null, ct);
         }
 

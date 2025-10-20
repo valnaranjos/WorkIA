@@ -1,57 +1,60 @@
 ﻿using KommoAIAgent.Application.Common;
-using Microsoft.AspNetCore.Builder.Extensions;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
-using System;
 
 namespace KommoAIAgent.Infrastructure.Caching
 {
     /// <summary>
-    /// Clase para almacenar en caché la última imagen enviada por un usuario.
+    /// Caché para la última imagen enviada por usuario, con límite de tamaño.
     /// </summary>
-    public sealed  class LastImageCache
+    public sealed class LastImageCache
     {
         private readonly IMemoryCache _cache;
+        private readonly ILogger<LastImageCache>? _logger;
 
-        public LastImageCache(IMemoryCache cache) => _cache = cache;
+        // 🔧 FIX: Límite de tamaño por imagen (5MB)
+        private const long MaxImageBytes = 5 * 1024 * 1024;
 
+        public LastImageCache(IMemoryCache cache, ILogger<LastImageCache>? logger = null)
+        {
+            _cache = cache;
+            _logger = logger;
+        }
 
-        ///key para almacenar la imagen en caché con tenant y leadId
         public static string ImgKey(string tenant, long leadId) => $"lastimg:{tenant}:{leadId}";
 
-        // Contexto de la imagen: bytes y tipo MIME.
         public readonly record struct ImageCtx(byte[] Bytes, string Mime);
 
         /// <summary>
-        /// Pone en caché la última imagen enviada por el usuario, con expiración deslizante de 3 minutos.
+        /// Almacena la última imagen con TTL deslizante y límite de tamaño.
         /// </summary>
-        /// <param name="leadId"></param>
-        /// <param name="bytes"></param>
-        /// <param name="mime"></param>
         public void SetLastImage(string tenant, long leadId, byte[] bytes, string mime)
         {
-            _cache.Set(
-                ImgKey(tenant, leadId),
-                new ImageCtx(bytes, mime),
-                new MemoryCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(3) }
-            );
+            // 🔧 FIX: Validar tamaño antes de cachear
+            if (bytes.Length > MaxImageBytes)
+            {
+                _logger?.LogWarning(
+                    "Imagen demasiado grande para caché: {Size}KB > {Max}MB (tenant={Tenant}, lead={Lead})",
+                    bytes.Length / 1024, MaxImageBytes / (1024 * 1024), tenant, leadId
+                );
+                return;
+            }
+
+            var options = new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = TimeSpan.FromMinutes(3),
+                // 🔧 FIX: Agregar límite de tamaño para evitar OOM
+                Size = bytes.Length,
+                Priority = CacheItemPriority.Low // Puede ser evictado si falta memoria
+            };
+
+            _cache.Set(ImgKey(tenant, leadId), new ImageCtx(bytes, mime), options);
         }
 
-        /// <summary>
-        /// Intenta obtener la última imagen enviada por el usuario.
-        /// </summary>
-        /// <param name="leadId"></param>
-        /// <param name="ctx"></param>
-        /// <returns></returns>
         public bool TryGetLastImage(string tenant, long leadId, out ImageCtx img)
-        => _cache.TryGetValue(ImgKey(tenant, leadId), out img);
+            => _cache.TryGetValue(ImgKey(tenant, leadId), out img);
 
-
-        /// <summary>
-        /// Borra la imagen en caché para un lead específico.
-        /// </summary>
-        /// <param name="leadId"></param>
         public void Remove(string tenant, long leadId)
-        => _cache.Remove(ImgKey(tenant, leadId));
+            => _cache.Remove(ImgKey(tenant, leadId));
     }
 }

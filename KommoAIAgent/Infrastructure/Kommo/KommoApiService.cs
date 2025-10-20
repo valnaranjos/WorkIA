@@ -34,7 +34,7 @@ namespace KommoAIAgent.Infrastructure.Kommo
         /// </summary>
         private HttpRequestMessage BuildRequest(HttpMethod method, string relativeOrAbsoluteUrl, HttpContent? content = null)
         {
-            // Permite url absoluta (https://sub.amocrm.com/...) o relativa (/api/v4/leads/...)
+            // Construir URL
             string url;
             if (relativeOrAbsoluteUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
@@ -42,24 +42,57 @@ namespace KommoAIAgent.Infrastructure.Kommo
             }
             else
             {
-                var baseUrl = _tenant.Config.Kommo.BaseUrl?.TrimEnd('/')
-                              ?? throw new InvalidOperationException($"Kommo BaseUrl vacío para tenant={_tenant.CurrentTenantId}");
+                var baseUrl = _tenant.Config.Kommo.BaseUrl?.TrimEnd('/');
+
+                // 🔧 FIX: Validación robusta de BaseUrl
+                if (string.IsNullOrWhiteSpace(baseUrl))
+                {
+                    var slug = _tenant.CurrentTenantId.Value;
+                    _logger.LogError("Kommo BaseUrl vacío para tenant={Tenant}", slug);
+                    throw new InvalidOperationException(
+                        $"Kommo.BaseUrl no configurado para tenant '{slug}'. " +
+                        $"Verifica la configuración del tenant en la base de datos."
+                    );
+                }
+
                 url = $"{baseUrl}/{relativeOrAbsoluteUrl.TrimStart('/')}";
             }
 
+            // Validar token
             var token = _tenant.Config.Kommo.AccessToken;
+
+            // 🔧 FIX: Manejo de token null/empty con fallback
             if (string.IsNullOrWhiteSpace(token))
-                throw new InvalidOperationException($"Kommo AccessToken vacío para tenant={_tenant.CurrentTenantId}");
+            {
+                var slug = _tenant.CurrentTenantId.Value;
+                _logger.LogError(
+                    "Kommo AccessToken vacío para tenant={Tenant}. URL={Url}",
+                    slug, url
+                );
 
-            // Fuerza HTTP/1.1 para evitar coalescing/mezcla entre subdominios por limitaciones Kommo
-            var req = new HttpRequestMessage(method, url) { Version = HttpVersion.Version11 };
+                throw new InvalidOperationException(
+                    $"Kommo.AccessToken no configurado para tenant '{slug}'. " +
+                    $"Configura el token en la tabla 'tenants' o mediante el endpoint /admin/tenants."
+                );
+            }
+
+            // Crear request con HTTP/1.1 forzado
+            var req = new HttpRequestMessage(method, url)
+            {
+                Version = HttpVersion.Version11
+            };
+
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            if (content != null) req.Content = content;
 
-            // Log de diagnóstico (host + cola de token)
-            var tail = token.Length >= 6 ? token[^6..] : token;
-            _logger.LogInformation("Kommo → {Method} {Url} (tenant={Tenant}, token=***{Tail})",
-                method, url, _tenant.CurrentTenantId, tail);
+            if (content != null)
+                req.Content = content;
+
+            // Log diagnóstico (solo últimos 6 chars del token)
+            var tokenTail = token.Length >= 6 ? token[^6..] : token;
+            _logger.LogInformation(
+                "Kommo → {Method} {Url} (tenant={Tenant}, token=***{Tail})",
+                method, url, _tenant.CurrentTenantId, tokenTail
+            );
 
             return req;
         }

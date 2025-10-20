@@ -1,4 +1,4 @@
-using KommoAIAgent.Api.Middleware;
+Ôªøusing KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Api.Security;
 using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Tenancy;
@@ -43,7 +43,7 @@ builder.Services.AddSingleton(sp =>
     return dsb.Build(); // NpgsqlDataSource
 });
 
-//ConexiÛn a la base de datos PostgreSQL con EF Core y el interceptor de auditorÌa.
+//Conexi√≥n a la base de datos PostgreSQL con EF Core y el interceptor de auditor√≠a.
 builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 {
     var dataSource = sp.GetRequiredService<NpgsqlDataSource>();
@@ -56,7 +56,7 @@ builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
 
 // -------------------- Servicios App --------------------
 
-//Servicio de configuraciÛn de proveedor de IA y su apiKey tanto por tenat como est·ndar.
+//Servicio de configuraci√≥n de proveedor de IA y su apiKey tanto por tenat como est√°ndar.
 builder.Services.AddSingleton<IAiCredentialProvider, AiCredentialProvider>();
 builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
 builder.Services.AddScoped<OpenAiService>();
@@ -66,18 +66,28 @@ builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>()
      .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
      {
-         // Reduce el tiempo de vida del pool para ìresetearî conexiones con frecuencia.
+         // Reduce el tiempo de vida del pool para ‚Äúresetear‚Äù conexiones con frecuencia.
          PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-         // Si alg˙n dÌa se vuelve a HTTP/2 y notas coalescing, habilitar m˙ltiples conexiones:
+         // Si alg√∫n d√≠a se vuelve a HTTP/2 y notas coalescing, habilitar m√∫ltiples conexiones:
          // EnableMultipleHttp2Connections = true
      });
 
 
-// Soporte para cachÈ en memoria, datos temporales e historial dentro de conversaciones.
-builder.Services.AddMemoryCache();
-// Buffer de mensajes en memoria para la ventana de envÌo de mensajes.
+// Soporte para cach√© en memoria, datos temporales e historial dentro de conversaciones.
+builder.Services.AddMemoryCache(options =>
+{
+    //FIX: L√≠mite de 500MB para prevenir memory leaks
+    options.SizeLimit = 500 * 1024 * 1024; // 500 MB en bytes
+
+    //Compactar cuando se alcance 80% del l√≠mite (libera 20%)
+    options.CompactionPercentage = 0.20;
+
+    //Intervalo de escaneo para expiraci√≥n de items (default: 1 min)
+    options.ExpirationScanFrequency = TimeSpan.FromMinutes(1);
+});
+// Buffer de mensajes en memoria para la ventana de env√≠o de mensajes.
 builder.Services.AddSingleton<IMessageBuffer, InMemoryMessageBuffer>();
-// Servicio para manejar la ˙ltima imagen por chat.
+// Servicio para manejar la √∫ltima imagen por chat.
 builder.Services.AddSingleton<LastImageCache>();
 // Servicio de memoria conversacional (Redis con fallback a local)
 builder.Services.AddSingleton<IChatMemoryStore, RedisChatMemoryStore>();
@@ -89,32 +99,32 @@ builder.Services.AddSingleton<ITokenBudget, InMemoryPeriodicTokenBudget>();
 
 // RAG (fase 2: BD postgres + pgvector)
 builder.Services.AddScoped<IKnowledgeStore, PgVectorKnowledgeStore>();
-//Servicio de cachÈ de embeddings en PostgreSQL (pgvector)
+//Servicio de cach√© de embeddings en PostgreSQL (pgvector)
 builder.Services.AddScoped<IEmbeddingCache, PostgresEmbeddingCache>();
 
 // Proveedor concreto (hoy OpenAI)
 builder.Services.AddScoped<IEmbeddingProvider, OpenAIEmbeddingProvider>();
 
-// Servicio de embeddings que usa doble cachÈ (mem + DB) y el provider
+// Servicio de embeddings que usa doble cach√© (mem + DB) y el provider
 builder.Services.AddScoped<IEmbedder, OpenAIEmbeddingService>();
 
 // Servicio de tracking de uso de IA en PostgreSQL
 builder.Services.AddScoped<IAIUsageTracker, PostgresAIUsageTracker>();
 
-//Servicio de api key para administraciÛn.
+//Servicio de api key para administraci√≥n.
 builder.Services.AddScoped<AdminApiKeyFilter>();
 
-//Servicio de RAG (RecuperaciÛn Augmentada por IA) que usa el KnowledgeStore y el Embedder, para separaciÛn del webhookHandler
+//Servicio de RAG (Recuperaci√≥n Augmentada por IA) que usa el KnowledgeStore y el Embedder, para separaci√≥n del webhookHandler
 builder.Services.AddScoped<IRagRetriever, RagRetriever>();
 
-//Servicio de cat·logo de costes de IA leyendo desde tabla ia_costs en PostgreSQL.
+//Servicio de cat√°logo de costes de IA leyendo desde tabla ia_costs en PostgreSQL.
 builder.Services.AddSingleton<IAiCostCatalog, PostgresAiCostCatalog>();
 
-// Servicio de chequeo de salud de tenants en segundo plano, para detectar problemas de configuraciÛn en producciÛn.
+// Servicio de chequeo de salud de tenants en segundo plano, para detectar problemas de configuraci√≥n en producci√≥n.
 builder.Services.AddHostedService<TenantHealthCheckService>();
 
 
-//API B·sica
+//API B√°sica
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -123,43 +133,67 @@ builder.Services.AddSwaggerGen();
 // -------------------- CORS --------------------
 var allowedOrigins = builder.Configuration
     .GetSection("AllowedOrigins")
-    .Get<string[]>() ?? ["https://localhost:7000", "https://serticloud.com"];
+    .Get<string[]>() ?? ["http://localhost:5173", "https://localhost:7000"];
 
-// PolÌtica CORS para permitir solo los orÌgenes listados en configuraciÛn..incluyendo front
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(policy =>
+    options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials(); // Si usas cookies/auth
     });
 });
 
 var app = builder.Build();
 
+//Soporte para X-Forwarded-* headers (ALB/CloudFront)
+if (!app.Environment.IsDevelopment())
+{
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+    });
+}
 
 // -------------------- Middleware --------------------
 app.UseMiddleware<TenantResolutionMiddleware>();
 
+// Swagger solo en desarrollo
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+// Logging middleware con info m√°s √∫til
 app.Use(async (ctx, next) =>
 {
-    var th = ctx.Request.Headers["X-Tenant-Slug"].ToString();
-    var tq = ctx.Request.Query["tenant"].ToString();
-    Console.WriteLine($"--> {ctx.Request.Method} {ctx.Request.Path} tenant(h)={th} tenant(q)={tq}");
+    var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+    var start = DateTime.UtcNow;
+
+    var tenantHeader = ctx.Request.Headers["X-Tenant-Slug"].ToString();
+    var tenantQuery = ctx.Request.Query["tenant"].ToString();
+    var tenant = tenantHeader ?? tenantQuery ?? "(none)";
+
+    logger.LogInformation(
+        "‚Üí {Method} {Path} tenant={Tenant}",
+        ctx.Request.Method, ctx.Request.Path, tenant
+    );
+
     await next();
-    Console.WriteLine($"<-- {ctx.Response.StatusCode} {ctx.Request.Path}");
+
+    var elapsed = DateTime.UtcNow - start;
+    logger.LogInformation(
+        "‚Üê {Status} {Path} {ElapsedMs}ms",
+        ctx.Response.StatusCode, ctx.Request.Path, elapsed.TotalMilliseconds
+    );
 });
 
 
-
-// Logging scope por tenant en cada request (si viene en header)
+// Request ID scope
 app.Use(async (ctx, next) =>
 {
     var reqId = ctx.TraceIdentifier;
@@ -167,26 +201,38 @@ app.Use(async (ctx, next) =>
 
     using (logger.BeginScope(new Dictionary<string, object?>
     {
-        ["requestId"] = reqId
+        ["requestId"] = reqId,
+        ["path"] = ctx.Request.Path.ToString()
     }))
     {
         await next();
     }
 });
 
+//UseHttpsRedirection solo en dev (en AWS el ALB maneja HTTPS)
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
-app.UseHttpsRedirection();
 
 app.UseStaticFiles();
 
-// Redirige /admin a /admin/index.html
-app.MapGet("/admin", ctx => {
-ctx.Response.Redirect("/admin/index.html");
-return Task.CompletedTask;
+// Redirect /admin a /admin/index.html
+app.MapGet("/admin", ctx =>
+{
+    ctx.Response.Redirect("/admin/index.html");
+    return Task.CompletedTask;
 });
 
 app.UseCors("AllowFrontend");
 
 app.MapControllers();
+
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation(
+    "KommoAIAgent iniciado - Environment: {Env}",
+    app.Environment.EnvironmentName
+);
 
 app.Run();

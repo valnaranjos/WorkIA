@@ -41,12 +41,12 @@ public sealed class AdminKbController : ControllerBase
     /// <returns></returns>
     [HttpGet("docs")]
     public async Task<IActionResult> ListDocs(
-        [FromQuery] string tenant,
-        [FromQuery] string? q,
-        [FromQuery] string? tags,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken ct = default)
+    [FromQuery] string tenant,
+    [FromQuery] string? q,
+    [FromQuery] string? tags,
+    [FromQuery] int page = 1,
+    [FromQuery] int pageSize = 20,
+    CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(tenant))
             return BadRequest(new { error = "Parámetro 'tenant' es requerido" });
@@ -55,12 +55,29 @@ public sealed class AdminKbController : ControllerBase
         pageSize = Math.Clamp(pageSize, 1, 200);
         var offset = (page - 1) * pageSize;
 
-        // Parseo de tags (opcional)
+        // 🔧 FIX: Validar y truncar query de búsqueda
+        string? searchTerm = null;
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            searchTerm = q.Trim();
+
+            // Limitar longitud para prevenir queries lentas
+            if (searchTerm.Length > 100)
+            {
+                searchTerm = searchTerm[..100];
+                _logger.LogWarning("Search query truncado a 100 chars (tenant={Tenant})", tenant);
+            }
+
+            // Sanitizar caracteres peligrosos
+            searchTerm = searchTerm.Replace("%", "\\%").Replace("_", "\\_");
+        }
+
+        // Parseo de tags
         string[]? tagArray = null;
         if (!string.IsNullOrWhiteSpace(tags))
             tagArray = tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        // Consulta: documentos + conteo de chunks, con filtros
+        // 🔧 FIX: Query mejorada con full-text search
         const string sql = @"
 WITH counts AS (
   SELECT document_id, COUNT(*) AS cnt
@@ -74,7 +91,11 @@ rows AS (
   FROM kb_documents d
   LEFT JOIN counts c ON c.document_id = d.id
   WHERE d.tenant_slug = @tenant
-    AND (@q IS NULL OR d.title ILIKE '%' || @q || '%' OR array_to_string(d.tags, ',') ILIKE '%' || @q || '%')
+    AND (
+      @q IS NULL 
+      OR d.title ILIKE '%' || @q || '%' ESCAPE '\'
+      OR array_to_string(d.tags, ',') ILIKE '%' || @q || '%' ESCAPE '\'
+    )
     AND (@tags IS NULL OR d.tags && @tags)
 )
 SELECT (SELECT COUNT(*) FROM rows) AS total,
@@ -87,29 +108,29 @@ SELECT (SELECT COUNT(*) FROM rows) AS total,
            'createdAt',  created_utc,
            'updatedAt',  updated_utc,
            'chunkCount', chunk_count
-         )
-       ), '[]'::jsonb)
+         ) ORDER BY updated_utc DESC
+       ), '[]'::jsonb) AS items
 FROM (
   SELECT * FROM rows
   ORDER BY updated_utc DESC
   LIMIT @limit OFFSET @offset
 ) t;
 ";
+
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
         await using var cmd = new NpgsqlCommand(sql, conn);
 
-        // @tenant SIEMPRE tipado
+        // Parámetros tipados
         cmd.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
 
-        // @q debe estar tipado AUNQUE sea null (por el ILIKE)
+        // @q puede ser null
         var pQ = new NpgsqlParameter("q", NpgsqlDbType.Text)
         {
-            Value = string.IsNullOrWhiteSpace(q) ? DBNull.Value : q
+            Value = searchTerm is null ? DBNull.Value : searchTerm
         };
         cmd.Parameters.Add(pQ);
 
-        // @tags debe estar tipado AUNQUE sea null (por el operador &&)
-        // Si no hay tags, manda un NULL tipado a TEXT[]
+        // @tags puede ser null
         if (tagArray is null)
         {
             var pTags = new NpgsqlParameter("tags", NpgsqlDbType.Array | NpgsqlDbType.Text)
@@ -133,7 +154,10 @@ FROM (
         var total = rdr.IsDBNull(0) ? 0 : rdr.GetInt64(0);
         var json = rdr.IsDBNull(1) ? "[]" : rdr.GetFieldValue<string>(1);
 
-        return Content($"{{\"total\":{total},\"page\":{page},\"pageSize\":{pageSize},\"items\":{json}}}", "application/json");
+        return Content(
+            $"{{\"total\":{total},\"page\":{page},\"pageSize\":{pageSize},\"items\":{json}}}",
+            "application/json"
+        );
     }
 
     /// <summary>

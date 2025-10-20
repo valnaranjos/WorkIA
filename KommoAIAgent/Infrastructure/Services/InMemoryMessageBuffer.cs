@@ -105,29 +105,31 @@ namespace KommoAIAgent.Infrastructure.Services
         /// <param name="ct"></param>
         /// <returns></returns>
         public async Task OfferAsync(
-            long leadId,
-            string? text,
-            IReadOnlyList<AttachmentInfo> attachments,
-            Func<long, AggregatedMessage, Task> onFlush,
-            CancellationToken ct = default)
+     long leadId,
+     string? text,
+     IReadOnlyList<AttachmentInfo> attachments,
+     Func<long, AggregatedMessage, Task> onFlush,
+     CancellationToken ct = default)
         {
             var state = _states.GetOrAdd(Key(leadId), _ => new State());
 
             AggregatedMessage? messageToFlush = null;
             TimeSpan flushDelay;
+            bool shouldFlush = false;
 
-            lock (state) // protege contra carreras por lead
+            // 🔒 Lock REDUCIDO - solo para leer/modificar estado
+            lock (state)
             {
                 var now = DateTimeOffset.UtcNow;
 
                 if (state.Texts.Count == 0 && state.Attachments.Count == 0)
                     state.FirstTs = now;
 
-                // Acumula texto si trae algo útil
+                // Acumula texto
                 if (!string.IsNullOrWhiteSpace(text))
                     state.Texts.Add(text!);
 
-                // Acumula adjuntos (evita duplicados por url simple)
+                // Acumula adjuntos (sin duplicados)
                 foreach (var a in attachments)
                 {
                     if (!string.IsNullOrWhiteSpace(a.Url) &&
@@ -139,62 +141,43 @@ namespace KommoAIAgent.Infrastructure.Services
 
                 state.LastTs = now;
 
-                bool flushNow = false;
+                // Decidir flush
+                bool hasImage = state.Attachments.Any(AttachmentHelper.IsImage);
+                var burstAge = now - state.FirstTs;
 
-                // Regla: si llega IMAGEN -> flush inmediato
-                if (state.Attachments.Any(AttachmentHelper.IsImage))
+                shouldFlush = hasImage || (burstAge >= _maxBurst);
+
+                if (shouldFlush)
                 {
-                    flushNow = true;
-                    _logger.LogDebug("Flush inmediato por imagen (lead={LeadId})", leadId);
-                }
-                else
-                {
-                    // Si no, decidimos por tiempos
-                    var burstAge = now - state.FirstTs;
-                    if (burstAge >= _maxBurst)
-                        flushNow = true;
-                    _logger.LogDebug("Flush inmediato por MaxBurst (lead={LeadId}, age={Age}ms)",
-                     leadId, burstAge.TotalMilliseconds);
+                    // Preparar mensaje para flush
+                    messageToFlush = new AggregatedMessage(
+                        Text: string.Join(" ", state.Texts).Trim(),
+                        Attachments: [.. state.Attachments]
+                    );
 
-                }
-
-                // Cancelar temporizador anterior y programar nuevo
-                state.Cts?.Cancel();
-                state.Cts?.Dispose();
-                state.Cts = new CancellationTokenSource();
-
-                var delay = flushNow ? TimeSpan.Zero : _window;
-
-                // Prepara aggregate (copia defensiva) para el callback
-                messageToFlush = new AggregatedMessage(
-                   Text: string.Join(" ", state.Texts).Trim(),
-                   Attachments: [.. state.Attachments] // copia defensiva
-               );
-
-                // Si flush inmediato, limpia ya el estado; si no, se limpia al disparar
-                if (flushNow)
-                {
+                    // Limpiar estado
                     state.Texts.Clear();
                     state.Attachments.Clear();
                     state.FirstTs = state.LastTs = default;
                 }
 
-                flushDelay = flushNow ? TimeSpan.Zero : _window;
+                flushDelay = shouldFlush ? TimeSpan.Zero : _window;
             }
+            // 🔓 Lock liberado ANTES de programar flush
 
             // Programar flush FUERA del lock
             state.ScheduleFlush(flushDelay, async () =>
             {
                 AggregatedMessage finalMessage;
 
-                // Si NO fue flush inmediato, tomar nuevo snapshot ahora
-                if (flushDelay > TimeSpan.Zero)
+                // Si NO fue flush inmediato, tomar snapshot ahora
+                if (!shouldFlush)
                 {
                     lock (state)
                     {
                         finalMessage = new AggregatedMessage(
                             Text: string.Join(" ", state.Texts).Trim(),
-                            Attachments: state.Attachments.ToList()
+                            Attachments: [.. state.Attachments]
                         );
                         state.Texts.Clear();
                         state.Attachments.Clear();
@@ -203,19 +186,17 @@ namespace KommoAIAgent.Infrastructure.Services
                 }
                 else
                 {
-                    // Flush inmediato: usar el snapshot que ya preparamos
                     finalMessage = messageToFlush!;
                 }
 
-                // Ejecutar callback
+                // Ejecutar callback sin lock
                 try
                 {
-                    //
                     await onFlush(leadId, finalMessage);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error al ejecutar flush (leadId={LeadId})", leadId);
+                    _logger.LogError(ex, "Error en flush callback (lead={LeadId})", leadId);
                 }
             });
 
