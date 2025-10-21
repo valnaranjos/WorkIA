@@ -41,16 +41,18 @@ namespace KommoAIAgent.Api.Middleware
             var path = http.Request.Path.ToString().ToLowerInvariant();
             //Para poder usar Swagger en dev sin tenant
             //Usar los endpoints /swagger, /health o que incluya /admin sin resolver tenant
-            if (path.StartsWith("/swagger") ||
-            path.StartsWith("/health") ||
-            path.StartsWith("/admin") ||
-            path.StartsWith("/diag") ||
-            path.StartsWith("/favicon") ||
-            path.StartsWith("/assets") ||
-            path.StartsWith("/css") ||
-            path.StartsWith("/api/admin") ||
-            path.StartsWith("/js"))
-            {
+            if (path == "/" ||
+              path.StartsWith("/index.html") ||
+              path.StartsWith("/swagger") ||
+              path.StartsWith("/health") ||
+              path.StartsWith("/admin") ||
+              path.StartsWith("/diag") ||
+              path.StartsWith("/favicon") ||
+              path.StartsWith("/assets") ||
+              path.StartsWith("/css") ||
+              path.StartsWith("/js") ||
+              path.StartsWith("/api/admin"))
+                    {
                 await _next(http);
                 return;
             }

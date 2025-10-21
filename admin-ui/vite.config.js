@@ -12,6 +12,7 @@ export default defineConfig({
         secure: false,                    // acepta cert dev
         rewrite: (p) => p.replace(/^\/api/, ''), // <-- quita /api
       },
-    },
+    },    
   },
+   build: { outDir: '../KommoAIAgent/wwwroot', emptyOutDir: true },
 })

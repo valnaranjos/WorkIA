@@ -1,6 +1,7 @@
 // lib/api.js - Cliente para comunicación con el backend (CORREGIDO)
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
+const API_URL = import.meta.env.PROD ? '' : '/api'; 
+
 const API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 
 class ApiClient {

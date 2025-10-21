@@ -1,0 +1,48 @@
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+
+# VS Code
+.vscode/
+.vs/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+
+# Frontend (ya debe estar compilado en wwwroot)
+../admin-ui/node_modules/
+../admin-ui/src/
+../admin-ui/.git/
+
+# Test files
+**/*Tests/
+**/*.Tests/

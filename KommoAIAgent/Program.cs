@@ -15,8 +15,11 @@ using Pgvector.Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.WebHost.UseUrls("https://localhost:7000");
-builder.Services.AddHealthChecks();
+if (builder.Environment.IsDevelopment())
+{
+    builder.WebHost.UseUrls("https://localhost:7000"); // solo en dev local
+}
+
 
 // -------------------- MultiTenancy --------------------
 builder.Services.Configure<MultiTenancyOptions>(
@@ -128,6 +131,7 @@ builder.Services.AddHostedService<TenantHealthCheckService>();
 
 //API Básica
 builder.Services.AddControllers();
+builder.Services.AddHealthChecks();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -159,6 +163,11 @@ if (!app.Environment.IsDevelopment())
                          | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
     });
 }
+
+
+app.UseDefaultFiles();
+
+app.UseStaticFiles();
 
 // -------------------- Middleware --------------------
 app.UseMiddleware<TenantResolutionMiddleware>();
@@ -218,18 +227,11 @@ if (app.Environment.IsDevelopment())
 }
 
 
-app.UseStaticFiles();
-
-// Redirect /admin a /admin/index.html
-app.MapGet("/admin", ctx =>
-{
-    ctx.Response.Redirect("/admin/index.html");
-    return Task.CompletedTask;
-});
-
 app.UseCors("AllowFrontend");
 
 app.MapControllers();
+
+app.MapFallbackToFile("/index.html");
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation(
