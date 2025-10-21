@@ -1,8 +1,10 @@
 ﻿using KommoAIAgent.Api.Middleware;
 using KommoAIAgent.Api.Security;
+using KommoAIAgent.Application.Connectors;
 using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Infrastructure.Caching;
+using KommoAIAgent.Infrastructure.Connectors;
 using KommoAIAgent.Infrastructure.Knowledge;
 using KommoAIAgent.Infrastructure.Kommo;
 using KommoAIAgent.Infrastructure.Persistence;
@@ -57,16 +59,7 @@ builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
     AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 });
 
-
-
-// -------------------- Servicios App --------------------
-
-//Servicio de configuración de proveedor de IA y su apiKey tanto por tenat como estándar.
-builder.Services.AddSingleton<IAiCredentialProvider, AiCredentialProvider>();
-builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
-builder.Services.AddScoped<OpenAiService>();
-builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
-
+//HTTSP CLIENTS!
 // Configura el HttpClient de KommoApiService leyendo BaseUrl/Token del tenant por request.
 builder.Services.AddHttpClient<IKommoApiService, KommoApiService>()
      .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -77,13 +70,22 @@ builder.Services.AddHttpClient<IKommoApiService, KommoApiService>()
          // EnableMultipleHttp2Connections = true
      });
 
+// -------------------- Servicios App --------------------
+
+//Servicio de configuración de proveedor de IA y su apiKey tanto por tenat como estándar.
+builder.Services.AddSingleton<IAiCredentialProvider, AiCredentialProvider>();
+builder.Services.AddScoped<IAiService, OpenAiService>();       // IA multi-tenant
+builder.Services.AddScoped<OpenAiService>();
+builder.Services.AddScoped<IWebhookHandler, WebhookHandler>();
+
+
+
+// Factory genérico para conectores externos (reutilizable), sin tipos genéricos) crea un factory genérico que PostgresConnectorFactory usa para crear clientes HTTP dinámicos por conector.
+builder.Services.AddHttpClient(); // 🆕 Este es para la factory de conectores
 
 // Soporte para caché en memoria, datos temporales e historial dentro de conversaciones.
 builder.Services.AddMemoryCache(options =>
 {
-    //FIX: Límite de 500MB para prevenir memory leaks
-    options.SizeLimit = 500 * 1024 * 1024; // 500 MB en bytes
-
     //Compactar cuando se alcance 80% del límite (libera 20%)
     options.CompactionPercentage = 0.20;
 
@@ -127,6 +129,11 @@ builder.Services.AddSingleton<IAiCostCatalog, PostgresAiCostCatalog>();
 
 // Servicio de chequeo de salud de tenants en segundo plano, para detectar problemas de configuración en producción.
 builder.Services.AddHostedService<TenantHealthCheckService>();
+
+
+// -------------------- Conectores Externos (Multi-Tenant) --------------------
+builder.Services.AddScoped<IConnectorFactory, PostgresConnectorFactory>(); // Factory de conectores desde PostgreSQL
+builder.Services.AddScoped<IIntentDetector, LlmIntentDetector>(); // Detector de intenciones basado en LLM
 
 
 //API Básica

@@ -1,13 +1,18 @@
 ﻿using KommoAIAgent.Api.Contracts;
 using KommoAIAgent.Application.Common;
+using KommoAIAgent.Application.Connectors;
 using KommoAIAgent.Application.Interfaces;
 using KommoAIAgent.Domain.Tenancy;
 using KommoAIAgent.Infrastructure.Caching;
 using Microsoft.Extensions.Caching.Memory;
+using Npgsql;
+using NpgsqlTypes;
 using OpenAI.Chat;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Net.Mail;
 using System.Text;
+using System.Text.Json;
 
 namespace KommoAIAgent.Infrastructure.Services
 {
@@ -28,6 +33,9 @@ namespace KommoAIAgent.Infrastructure.Services
         private readonly IRateLimiter _limiter;
         private readonly IRagRetriever _ragRetriever;
         private readonly ITokenBudget _tokenBudget;
+        private readonly IConnectorFactory _connectorFactory;
+        private readonly IIntentDetector _intentDetector;
+        private readonly NpgsqlDataSource _dataSource;
 
 
 
@@ -43,8 +51,10 @@ namespace KommoAIAgent.Infrastructure.Services
             ITenantContext tenant,
             IRateLimiter limiter,
             IRagRetriever ragRetriever,
-            ITokenBudget tokenBudget
-            )
+            ITokenBudget tokenBudget,
+            IConnectorFactory connectorFactory,
+            IIntentDetector intentDetector,
+            NpgsqlDataSource dataSource)
         {
             _kommoService = kommoService;
             _aiService = aiService;
@@ -58,6 +68,9 @@ namespace KommoAIAgent.Infrastructure.Services
             _limiter = limiter;
             _ragRetriever = ragRetriever;
             _tokenBudget = tokenBudget;
+            _connectorFactory = connectorFactory;
+            _intentDetector = intentDetector;
+            _dataSource = dataSource;
         }
 
         /// <summary>
@@ -67,6 +80,7 @@ namespace KommoAIAgent.Infrastructure.Services
         /// <returns></returns>
         public async Task ProcessIncomingMessageAsync(KommoWebhookPayload payload)
         {
+            _logger.LogWarning("🔍 DEBUG: ProcessIncomingMessageAsync INICIADO");
             // Extraer y validar el mensaje
             var messageDetails = payload?.Message?.AddedMessages?.FirstOrDefault();
             if (messageDetails is null || !messageDetails.LeadId.HasValue)
@@ -151,9 +165,66 @@ namespace KommoAIAgent.Infrastructure.Services
                 var tenantSlug = _tenant.CurrentTenantId.Value;
                 if (!await _limiter.TryConsumeAsync(tenantSlug, leadId, ct))
                 {
-                    _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);                   
+                    _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);
                     return; // se detiene el procesamiento para no llamar a OpenAI.
                 }
+
+                // 🆕 ========== DETECCIÓN DE INTENCIÓN EXTERNA ==========
+                // Solo si NO hay imágenes adjuntas (las imágenes van directo a IA)
+                var hasImage = attachments?.Any(AttachmentHelper.IsImage) ?? false;
+
+                if (!hasImage && !string.IsNullOrWhiteSpace(userText))
+                {
+                    var intent = await _intentDetector.DetectAsync(userText, tenantSlug, ct);
+
+                    if (intent.RequiresConnector && intent.Confidence >= 0.7f)
+                    {
+                        _logger.LogInformation(
+                            "External intent detected: capability={Capability}, confidence={Confidence}",
+                            intent.Capability, intent.Confidence
+                        );
+
+                        var connectorResult = await HandleExternalActionAsync(
+                            leadId,
+                            intent,
+                            userText,
+                            ct
+                        );
+
+                        if (connectorResult.Success)
+                        {
+                            // Conector manejó exitosamente la acción
+                            await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                            await _conv.AppendAssistantAsync(_tenant, leadId, connectorResult.Message!, ct);
+
+                            await _kommoService.UpdateLeadMensajeIAAsync(
+                                leadId,
+                                TextUtil.Truncate(connectorResult.Message!, KOMMO_FIELD_MAX),
+                                ct
+                            );
+
+                            _logger.LogInformation(
+                                "External action completed successfully (lead={LeadId}, capability={Capability})",
+                                leadId, intent.Capability
+                            );
+
+                            return; // Salir aquí, no llamar a IA
+                        }
+                        else
+                        {
+                            // Conector falló, continuar con respuesta de IA (fallback)
+                            _logger.LogWarning(
+                                "External connector failed, falling back to AI (lead={LeadId}, error={Error})",
+                                leadId, connectorResult.ErrorDetails
+                            );
+
+                            // Opcional: agregar contexto del error al prompt de la IA
+                            // Para que pueda decir "Lo siento, tuve un problema al procesar tu solicitud..."
+                        }
+                    }
+                }
+
+
 
                 // Construir el historial de mensajes para enviar a la IA
                 var messages = await ChatComposer.BuildHistoryMessagesAsync(
@@ -317,6 +388,178 @@ namespace KommoAIAgent.Infrastructure.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error procesando TURNO AGREGADO para Lead {LeadId}", leadId);
+            }
+        }
+
+
+        /// <summary>
+        /// Maneja una acción externa invocando el conector apropiado
+        /// </summary>
+        private async Task<ConnectorResponse> HandleExternalActionAsync(
+            long leadId,
+            ExternalIntent intent,
+            string userMessage,
+            CancellationToken ct = default)
+        {
+            var tenantSlug = _tenant.CurrentTenantId.Value;
+
+            try
+            {
+                // 1. Obtener el conector
+                IExternalConnector? connector = null;
+
+                if (!string.IsNullOrWhiteSpace(intent.ConnectorType))
+                {
+                    connector = await _connectorFactory.GetConnectorAsync(
+                        tenantSlug,
+                        intent.ConnectorType,
+                        ct
+                    );
+                }
+                else if (!string.IsNullOrWhiteSpace(intent.Capability))
+                {
+                    // Buscar por capability si no se especificó conector
+                    connector = await _connectorFactory.FindConnectorByCapabilityAsync(
+                        tenantSlug,
+                        intent.Capability,
+                        ct
+                    );
+                }
+
+                if (connector is null)
+                {
+                    _logger.LogWarning(
+                        "No connector found for intent (tenant={Tenant}, type={Type}, capability={Cap})",
+                        tenantSlug, intent.ConnectorType, intent.Capability
+                    );
+
+                    return new ConnectorResponse
+                    {
+                        Success = false,
+                        Message = "Lo siento, no tengo acceso a ese sistema en este momento.",
+                        ErrorCode = "CONNECTOR_NOT_FOUND"
+                    };
+                }
+
+                // 2. Invocar el conector
+                var startTime = DateTime.UtcNow;
+
+                var response = await connector.InvokeAsync(
+                    intent.Capability!,
+                    intent.Parameters,
+                    ct
+                );
+
+                var duration = (int)(DateTime.UtcNow - startTime).TotalMilliseconds;
+
+                // 3. Registrar log de invocación
+                await LogConnectorInvocationAsync(
+                    tenantSlug,
+                    connector,
+                    intent.Capability!,
+                    intent.Parameters,
+                    response,
+                    duration,
+                    leadId,
+                    userMessage,
+                    ct
+                );
+
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Error handling external action (tenant={Tenant}, capability={Cap})",
+                    tenantSlug, intent.Capability
+                );
+
+                return new ConnectorResponse
+                {
+                    Success = false,
+                    Message = "Ocurrió un error al procesar tu solicitud. Un agente te ayudará pronto.",
+                    ErrorDetails = ex.Message,
+                    ErrorCode = "INTERNAL_ERROR"
+                };
+            }
+        }
+
+        /// <summary>
+        /// Registra la invocación de un conector en la BD (para auditoría y métricas)
+        /// </summary>
+        private async Task LogConnectorInvocationAsync(
+            string tenantSlug,
+            IExternalConnector connector,
+            string capability,
+            Dictionary<string, object> parameters,
+            ConnectorResponse response,
+            int durationMs,
+            long leadId,
+            string userMessage,
+            CancellationToken ct = default)
+        {
+            try
+            {
+                await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+                const string sql = @"
+            INSERT INTO connector_invocation_logs (
+                tenant_slug,
+                connector_id,
+                connector_type,
+                capability,
+                request_params,
+                success,
+                status_code,
+                response_data,
+                error_message,
+                duration_ms,
+                lead_id,
+                user_message
+            )
+            SELECT 
+                @tenant,
+                tc.id,
+                @type,
+                @capability,
+                @params::jsonb,
+                @success,
+                @statusCode,
+                @responseData::jsonb,
+                @errorMsg,
+                @duration,
+                @leadId,
+                @userMsg
+            FROM tenant_connectors tc
+            WHERE tc.tenant_slug = @tenant AND tc.connector_type = @type
+            LIMIT 1;
+        ";
+
+                await using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenantSlug);
+                cmd.Parameters.AddWithValue("type", NpgsqlDbType.Text, connector.ConnectorType);
+                cmd.Parameters.AddWithValue("capability", NpgsqlDbType.Text, capability);
+                cmd.Parameters.AddWithValue("params", NpgsqlDbType.Jsonb,
+                    JsonSerializer.Serialize(parameters));
+                cmd.Parameters.AddWithValue("success", NpgsqlDbType.Boolean, response.Success);
+                cmd.Parameters.AddWithValue("statusCode", NpgsqlDbType.Integer,
+                    response.Metadata?.GetValueOrDefault("statusCode") ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("responseData", NpgsqlDbType.Jsonb,
+                    response.Data is not null ? JsonSerializer.Serialize(response.Data) : (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("errorMsg", NpgsqlDbType.Text,
+                    response.ErrorDetails ?? (object)DBNull.Value);
+                cmd.Parameters.AddWithValue("duration", NpgsqlDbType.Integer, durationMs);
+                cmd.Parameters.AddWithValue("leadId", NpgsqlDbType.Bigint, leadId);
+                cmd.Parameters.AddWithValue("userMsg", NpgsqlDbType.Text,
+                    TextUtil.Truncate(userMessage, 500));
+
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to log connector invocation");
+                // No lanzar excepción, es solo logging
             }
         }
     }
