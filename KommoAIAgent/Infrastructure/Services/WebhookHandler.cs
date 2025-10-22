@@ -184,46 +184,93 @@ namespace KommoAIAgent.Infrastructure.Services
                             intent.Capability, intent.Confidence
                         );
 
-                        var connectorResult = await HandleExternalActionAsync(
-                            leadId,
-                            intent,
-                            userText,
-                            ct
-                        );
+                        // 🔧 NUEVO: Verificar parámetros requeridos
+                        string? missingParam = null;
 
-                        if (connectorResult.Success)
+                        // Para get_patient_appointments, necesitamos patientDocument
+                        if (intent.Capability == "get_patient_appointments")
                         {
-                            // Conector manejó exitosamente la acción
-                            await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
-                            await _conv.AppendAssistantAsync(_tenant, leadId, connectorResult.Message!, ct);
+                            if (!intent.Parameters.ContainsKey("patientDocument") &&
+                                !intent.Parameters.ContainsKey("document"))
+                            {
+                                missingParam = "documento";
+                            }
+                        }
 
-                            await _kommoService.UpdateLeadMensajeIAAsync(
-                                leadId,
-                                TextUtil.Truncate(connectorResult.Message!, KOMMO_FIELD_MAX),
-                                ct
-                            );
+                        // Para cancel_appointment, necesitamos agendaId
+                        if (intent.Capability == "cancel_appointment")
+                        {
+                            if (!intent.Parameters.ContainsKey("agendaId") &&
+                                !intent.Parameters.ContainsKey("agenda_id"))
+                            {
+                                missingParam = "número de cita";
+                            }
+                        }
 
+                        // 🔧 Si falta un parámetro, pedir a la IA que lo solicite
+                        if (missingParam != null)
+                        {
                             _logger.LogInformation(
-                                "External action completed successfully (lead={LeadId}, capability={Capability})",
-                                leadId, intent.Capability
+                                "Missing parameter '{Param}' for capability {Capability}, asking AI to request it",
+                                missingParam, intent.Capability
                             );
 
-                            return; // Salir aquí, no llamar a IA
+                            // NO invocar conector, dejar que la IA maneje la conversación
+                            // y pida el parámetro faltante naturalmente
+                            // El código continúa abajo con el flujo normal de IA
                         }
                         else
                         {
-                            // Conector falló, continuar con respuesta de IA (fallback)
-                            _logger.LogWarning(
-                                "External connector failed, falling back to AI (lead={LeadId}, error={Error})",
-                                leadId, connectorResult.ErrorDetails
+                            // ✅ Todos los parámetros están presentes, invocar conector
+                            var connectorResult = await HandleExternalActionAsync(
+                                leadId,
+                                intent,
+                                userText,
+                                ct
                             );
 
-                            // Opcional: agregar contexto del error al prompt de la IA
-                            // Para que pueda decir "Lo siento, tuve un problema al procesar tu solicitud..."
+                            if (connectorResult.Success)
+                            {
+                                // ✅ Conector manejó exitosamente la acción
+                                await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                                await _conv.AppendAssistantAsync(_tenant, leadId, connectorResult.Message!, ct);
+
+                                // 🔧 FIX: Intentar actualizar Kommo, pero no fallar si no hay token
+                                try
+                                {
+                                    await _kommoService.UpdateLeadMensajeIAAsync(
+                                        leadId,
+                                        TextUtil.Truncate(connectorResult.Message!, KOMMO_FIELD_MAX),
+                                        ct
+                                    );
+                                }
+                                catch (InvalidOperationException ex) when (ex.Message.Contains("AccessToken"))
+                                {
+                                    _logger.LogWarning(
+                                        "No se pudo actualizar Kommo (sin token configurado) - lead={LeadId}",
+                                        leadId
+                                    );
+                                    // No lanzar error, continuar
+                                }
+
+                                _logger.LogInformation(
+                                    "External action completed successfully (lead={LeadId}, capability={Capability})",
+                                    leadId, intent.Capability
+                                );
+
+                                return; // ⚠️ Salir aquí, no llamar a IA
+                            }
+                            else
+                            {
+                                // ⚠️ Conector falló, continuar con respuesta de IA (fallback)
+                                _logger.LogWarning(
+                                    "External connector failed, falling back to AI (lead={LeadId}, error={Error})",
+                                    leadId, connectorResult.ErrorDetails
+                                );
+                            }
                         }
                     }
                 }
-
 
 
                 // Construir el historial de mensajes para enviar a la IA
