@@ -143,20 +143,23 @@ namespace KommoAIAgent.Infrastructure.Services
         /// <summary>
         /// Porcesa un turno agregado (después de debounce)
         /// Es quien llama a la IA y actualiza Kommo.
+        ///  soporte completo para extracción de imágenes + intent detection + conectores + RAG.
         /// </summary>
         /// <param name="leadId"></param>
         /// <param name="userText"></param>
         /// <param name="attachments"></param>
         /// <params name="ct"></params> 
         /// <returns></returns>
-        /// <summary>
-        /// Procesa un turno agregado (después de debounce)
-        /// Es quien llama a la IA y actualiza Kommo.
-        /// </summary>
-        private async Task ProcessAggregatedTurnAsync(long leadId, string userText, List<AttachmentInfo> attachments, CancellationToken ct = default)
+        private async Task ProcessAggregatedTurnAsync(
+             long leadId,
+             string userText,
+             List<AttachmentInfo> attachments,
+             CancellationToken ct = default)
         {
-            _logger.LogInformation("Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
-                leadId, userText, attachments?.Count ?? 0);
+            _logger.LogInformation(
+                "Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
+                leadId, userText, attachments?.Count ?? 0
+            );
 
             const int KOMMO_FIELD_MAX = 8000;
             const float GuardrailScore = 0.22f;
@@ -171,30 +174,121 @@ namespace KommoAIAgent.Infrastructure.Services
                     return;
                 }
 
-                // ========== PASO 1: DETECCIÓN DE INTENCIÓN Y CONECTORES ==========
-                // Variable para almacenar datos del conector (si se invoca)
+                // ========== PASO 1: EXTRACCIÓN DE IMÁGENES Y DETECCIÓN DE INTENCIÓN ==========
+
+                // Variables para almacenar datos del conector (si se invoca)
                 object? externalData = null;
                 string? externalDataSource = null;
+                string? extractedTextFromImage = null;
 
                 var hasImage = attachments?.Any(AttachmentHelper.IsImage) ?? false;
+                var hasText = !string.IsNullOrWhiteSpace(userText);
 
-                if (!hasImage && !string.IsNullOrWhiteSpace(userText))
+                // CASO 1: Solo imagen (sin texto) - Extraer texto primero
+                if (hasImage && !hasText && _tenant.Config?.AI?.EnableImageOCR == true)
+                {
+                    _logger.LogInformation("Image without text detected, extracting content first");
+
+                    var imageAttachment = attachments!.First(AttachmentHelper.IsImage);
+                    var (bytes, mime, fileName) = await _kommoService.DownloadAttachmentAsync(imageAttachment.Url!);
+
+                    if (string.IsNullOrWhiteSpace(mime))
+                        mime = AttachmentHelper.GuessMimeFromUrlOrName(imageAttachment.Url!, fileName);
+
+                    // FASE 1: Extracción estructurada de la imagen
+                    var extractionMessages = new List<ChatMessage>
+            {
+                ChatMessage.CreateSystemMessage(@"
+Analiza esta imagen y extrae información estructurada.
+
+Responde SOLO en formato JSON:
+{
+  ""description"": ""descripción breve"",
+  ""extracted_text"": ""todo el texto visible"",
+  ""entities"": {
+    ""document_type"": ""tipo de documento si aplica (CC, TI, pasaporte, receta, factura, etc.)"",
+    ""document_number"": ""número si es visible"",
+    ""person_name"": ""nombre si es visible"",
+    ""date"": ""fecha si es visible (formato ISO)"",
+    ""amount"": ""monto si es visible"",
+    ""other_key_info"": ""cualquier otra info relevante""
+  },
+  ""implicit_intent"": ""qué parece querer hacer el usuario"",
+  ""search_terms"": ""términos clave para búsqueda""
+}
+
+IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
+")
+            };
+
+                    ChatComposer.AppendUserTextAndImage(
+                        extractionMessages,
+                        "Extrae información de esta imagen",
+                        bytes,
+                        mime
+                    );
+
+                    var extractionResponse = await _aiService.CompleteAsync(
+                        extractionMessages,
+                        maxTokens: 400,
+                        model: "gpt-4o",
+                        ct
+                    );
+
+                    _logger.LogInformation("Image extraction: {Response}", extractionResponse);
+
+                    try
+                    {
+                        // Parsear JSON de extracción
+                        var jsonMatch = System.Text.RegularExpressions.Regex.Match(
+                            extractionResponse,
+                            @"\{[\s\S]*\}"
+                        );
+
+                        if (jsonMatch.Success)
+                        {
+                            var extraction = JsonDocument.Parse(jsonMatch.Value);
+                            var root = extraction.RootElement;
+
+                            extractedTextFromImage = root.GetProperty("extracted_text").GetString() ?? "";
+
+                            var implicitIntent = root.TryGetProperty("implicit_intent", out var intent)
+                                ? intent.GetString()
+                                : "";
+
+                            // Combinar texto extraído + intención implícita
+                            userText = $"{extractedTextFromImage} {implicitIntent}".Trim();
+
+                            _logger.LogInformation(
+                                "Synthesized userText from image: {Text}",
+                                userText
+                            );
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse image extraction JSON");
+                    }
+                }
+
+                // PASO 2: DETECCIÓN DE INTENCIÓN (con o sin imagen)
+                if (!string.IsNullOrWhiteSpace(userText) && _tenant.Config?.AI?.EnableAutoConnectorInvocation == true)
                 {
                     var intent = await _intentDetector.DetectAsync(userText, tenantSlug, ct);
 
                     if (intent.RequiresConnector && intent.Confidence >= 0.7f)
                     {
                         _logger.LogInformation(
-                            "External intent detected: capability={Capability}, confidence={Confidence}",
-                            intent.Capability, intent.Confidence
+                            "External intent detected: capability={Capability}, confidence={Confidence}, source={Source}",
+                            intent.Capability,
+                            intent.Confidence,
+                            extractedTextFromImage != null ? "image-extraction" : "user-text"
                         );
 
-                        // Verificar si tiene todos los parámetros requeridos
                         bool hasAllParams = CheckRequiredParameters(intent);
 
                         if (hasAllParams)
                         {
-                            // ✅ Invocar conector
                             var connectorResult = await HandleExternalActionAsync(
                                 leadId,
                                 intent,
@@ -206,39 +300,36 @@ namespace KommoAIAgent.Infrastructure.Services
                             {
                                 _logger.LogInformation(
                                     "Connector invoked successfully (lead={LeadId}, capability={Capability})",
-                                    leadId, intent.Capability
+                                    leadId,
+                                    intent.Capability
                                 );
 
-                                // 🔧 GUARDAR los datos para pasárselos a la IA
                                 externalData = connectorResult.Data;
                                 externalDataSource = $"{intent.ConnectorType}.{intent.Capability}";
-
-                                // ⚠️ NO SALIR AQUÍ - Continuar al flujo de IA
                             }
                             else
                             {
                                 _logger.LogWarning(
                                     "Connector failed (lead={LeadId}, error={Error})",
-                                    leadId, connectorResult.ErrorDetails
+                                    leadId,
+                                    connectorResult.ErrorDetails
                                 );
-                                // Continuar sin datos del conector (fallback a IA pura)
                             }
                         }
                         else
                         {
                             _logger.LogInformation(
-                                "Missing required parameters for {Capability}, letting AI handle the conversation",
+                                "Missing parameters for {Capability}, AI will handle",
                                 intent.Capability
                             );
-                            // La IA pedirá los parámetros faltantes naturalmente
                         }
                     }
                 }
 
-                // ========== PASO 2: GUARDAR MENSAJE DEL USUARIO ==========
-                await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
+                // PASO 3: Guardar mensaje del usuario (real o sintetizado)
+                await _conv.AppendUserAsync(_tenant, leadId, userText ?? "", ct);
 
-                // ========== PASO 3: CONSTRUIR CONTEXTO PARA LA IA ==========
+                // PASO 4: Construir contexto para la IA
                 var messages = await ChatComposer.BuildHistoryMessagesAsync(
                     _conv, _tenant, leadId, historyTurns: 10, ct
                 );
@@ -263,8 +354,6 @@ namespace KommoAIAgent.Infrastructure.Services
                         ? "Describe la imagen y extrae cualquier texto visible."
                         : userText;
 
-                    ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
-
                     // Guardrail de presupuesto
                     var estTotalImg = inputEstimate + 600;
                     if (!await _tokenBudget.CanConsumeAsync(_tenant, estTotalImg, ct))
@@ -277,12 +366,20 @@ namespace KommoAIAgent.Infrastructure.Services
                         return;
                     }
 
+                    // Si hay datos del conector, agregarlos al contexto
+                    if (externalData != null)
+                    {
+                        var connectorContext = BuildConnectorContext(externalData, externalDataSource!);
+                        messages.Add(ChatMessage.CreateSystemMessage(connectorContext));
+                    }
+
+                    ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
                     aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                 }
                 // ========== RAMA: SOLO TEXTO ==========
                 else
                 {
-                    // ========== PASO 3.1: RAG (SIEMPRE, incluso si hubo conector) ==========
+                    // PASO 4.1: RAG (SIEMPRE, incluso si hubo conector)
                     List<KbChunkHit>? hits = null;
                     float topScore = 0f;
 
@@ -292,7 +389,8 @@ namespace KommoAIAgent.Infrastructure.Services
 
                         if (!_cache.TryGetValue(cacheKey, out hits))
                         {
-                            var (hitsList, ts) = await _ragRetriever.RetrieveAsync(tenantSlug, userText, topK: 6, ct);
+                            var (hitsList, ts) = await _ragRetriever.RetrieveAsync(
+                                tenantSlug, userText ?? "", topK: 6, ct);
                             topScore = ts;
                             hits = hitsList.ToList();
                             _cache.Set(cacheKey, hits, TimeSpan.FromSeconds(30));
@@ -305,8 +403,7 @@ namespace KommoAIAgent.Infrastructure.Services
                         if (hits.Count > 0)
                             _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}", hits.Count, topScore);
 
-                        // 🔧 AJUSTE: Si hay datos de conector, NO aplicar guardrail de RAG
-                        // (el conector ya proveyó datos válidos)
+                        // Si hay datos de conector, NO aplicar guardrail de RAG
                         if (externalData == null && (hits.Count == 0 || topScore < GuardrailScore))
                         {
                             var safeReply =
@@ -325,19 +422,8 @@ namespace KommoAIAgent.Infrastructure.Services
                         const float MinScore = 0.28f;
                         if (topScore >= MinScore && hits.Count > 0)
                         {
-                            var sbCtx = new StringBuilder();
-                            sbCtx.AppendLine(
-                                "CONTEXT (RAG): Usa estos fragmentos como referencia para responder.\n"
-                            );
-
-                            for (int i = 0; i < hits.Count; i++)
-                            {
-                                var h = hits[i];
-                                var title = string.IsNullOrWhiteSpace(h.Title) ? "Documento" : h.Title!;
-                                sbCtx.AppendLine($"[{i + 1}] ({title}) {TextUtil.Truncate(h.Text, 450)}");
-                            }
-
-                            messages.Add(ChatMessage.CreateSystemMessage(sbCtx.ToString()));
+                            var ragContext = BuildRagContext(hits);
+                            messages.Add(ChatMessage.CreateSystemMessage(ragContext));
                         }
                     }
                     catch (Exception rex)
@@ -345,48 +431,29 @@ namespace KommoAIAgent.Infrastructure.Services
                         _logger.LogWarning(rex, "RAG search falló; continuando sin contexto");
                     }
 
-                    // ========== PASO 3.2: AGREGAR DATOS DEL CONECTOR (si los hay) ==========
+                    // PASO 4.2: AGREGAR DATOS DEL CONECTOR (si los hay)
                     if (externalData != null)
                     {
-                        var connectorDataJson = JsonSerializer.Serialize(externalData, new JsonSerializerOptions
-                        {
-                            WriteIndented = true
-                        });
-
-                        var connectorContext = $@"
-DATOS DEL SISTEMA EXTERNO (fuente: {externalDataSource}):
-```json
-{connectorDataJson}
-```
-
-INSTRUCCIONES:
-- Estos datos provienen de un sistema externo y son información actualizada y confiable
-- Analiza estos datos y responde al usuario en lenguaje natural y conversacional
-- Presenta la información de forma clara, organizada y fácil de entender
-- Usa un tono profesional pero cercano
-- NO inventes información que no esté en los datos
-- Si el usuario pregunta por detalles adicionales que no están en los datos, indícalo claramente
-";
-
+                        var connectorContext = BuildConnectorContext(externalData, externalDataSource!);
                         messages.Add(ChatMessage.CreateSystemMessage(connectorContext));
 
                         _logger.LogInformation(
-                            "Added external data context to IA (source={Source}, dataSize={Size})",
-                            externalDataSource, connectorDataJson.Length
+                            "Added external data context to IA (source={Source})",
+                            externalDataSource
                         );
                     }
 
-                    // ========== PASO 3.3: AGREGAR MENSAJE DEL USUARIO ==========
+                    // PASO 4.3: AGREGAR MENSAJE DEL USUARIO
                     if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last))
                     {
                         // Reuso de imagen reciente en caché
-                        ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
+                        ChatComposer.AppendUserTextAndImage(messages, userText ?? "", last.Bytes, last.Mime);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
                     else
                     {
                         // Solo texto
-                        ChatComposer.AppendUserText(messages, userText);
+                        ChatComposer.AppendUserText(messages, userText ?? "");
 
                         // Guardrail de presupuesto
                         var estTotalText = inputEstimate + 400;
@@ -404,7 +471,7 @@ INSTRUCCIONES:
                     }
                 }
 
-                // ========== PASO 4: GUARDAR Y ENVIAR RESPUESTA ==========
+                // PASO 5: GUARDAR Y ENVIAR RESPUESTA
                 await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
 
                 try
@@ -428,7 +495,11 @@ INSTRUCCIONES:
             }
         }
 
-        // ========== MÉTODO AUXILIAR ==========
+        // ========== MÉTODOS AUXILIARES ==========
+
+        /// <summary>
+        /// Verifica si el intent tiene todos los parámetros requeridos.
+        /// </summary>
         private bool CheckRequiredParameters(ExternalIntent intent)
         {
             if (intent.Capability == "get_patient_appointments")
@@ -447,6 +518,52 @@ INSTRUCCIONES:
             return true;
         }
 
+        /// <summary>
+        /// Construye el contexto de RAG para la IA.
+        /// </summary>
+        private string BuildRagContext(List<KbChunkHit> hits)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("CONTEXTO RELEVANTE DE LA BASE DE CONOCIMIENTO:");
+
+            for (int i = 0; i < hits.Count; i++)
+            {
+                var h = hits[i];
+                var title = string.IsNullOrWhiteSpace(h.Title) ? "Documento" : h.Title;
+                sb.AppendLine($"\n[{i + 1}] {title}");
+                sb.AppendLine(TextUtil.Truncate(h.Text, 400));
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Construye el contexto de datos del conector para la IA.
+        /// </summary>
+        private string BuildConnectorContext(object data, string source)
+        {
+            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            return $@"
+DATOS DEL SISTEMA EXTERNO (fuente: {source}):
+```json
+{json}
+```
+
+INSTRUCCIONES:
+- Estos datos provienen de un sistema externo y son información actualizada y confiable
+- Analiza estos datos y responde al usuario en lenguaje natural y conversacional
+- Presenta la información de forma clara, organizada y fácil de entender
+- Usa un tono profesional pero cercano
+- NO inventes información que no esté en los datos
+- Si el usuario pregunta por detalles adicionales que no están en los datos, indícalo claramente
+";
+        }
+
+        // ========== MÉTODOS AUXILIARES ==========
 
         /// <summary>
         /// Maneja una acción externa invocando el conector apropiado
