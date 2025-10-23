@@ -74,7 +74,7 @@ public class AdminTenantsController : ControllerBase
         // Validaciones mínimas adicionales (además de DataAnnotations)
         if (string.IsNullOrWhiteSpace(req.DisplayName))
             return BadRequest("DisplayName es requerido.");
-        if (req.KommoMensajeIaFieldId <0)
+        if (req.KommoMensajeIaFieldId < 0)
             return BadRequest("KommoMensajeIaFieldId es requerido y debe ser > 0.");
 
         // Reglas de negocio a string JSON (si vinieron)
@@ -114,7 +114,7 @@ public class AdminTenantsController : ControllerBase
             ImageCacheTTLMinutes = req.ImageCacheTTLMinutes,
             MonthlyTokenBudget = req.MonthlyTokenBudget,
             AlertThresholdPct = req.AlertThresholdPct,  // <- double→float (si guardas 0..1)
-                                                               // Si guardas 0..100, usa: (float)(req.AlertThresholdPct / 100.0)
+                                                        // Si guardas 0..100, usa: (float)(req.AlertThresholdPct / 100.0)
 
             // --- Auditoría ---
             CreatedAt = now,
@@ -160,6 +160,14 @@ public class AdminTenantsController : ControllerBase
         if (req.TopP.HasValue) t.TopP = req.TopP.Value;
         if (req.MaxTokens.HasValue) t.MaxTokens = req.MaxTokens.Value;
         if (req.SystemPrompt is not null) t.SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim();
+
+
+        if (req.IaApiKey is not null) t.IaApiKey = req.IaApiKey;
+        if (req.FallbackProvider is not null) t.FallbackProvider = req.FallbackProvider;
+        if (req.FallbackApiKey is not null) t.FallbackApiKey = req.FallbackApiKey;
+        if (req.EnableImageOCR.HasValue) t.EnableImageOCR = req.EnableImageOCR.Value;
+        if (req.EnableAutoConnectorInvocation.HasValue) t.EnableAutoConnectorInvocation = req.EnableAutoConnectorInvocation.Value;
+
 
         if (req.BusinessRules is JsonElement el)
             t.BusinessRulesJson = el.GetRawText()?.Trim() ?? t.BusinessRulesJson;
@@ -220,7 +228,7 @@ public class AdminTenantsController : ControllerBase
         t.SystemPrompt = (req.SystemPrompt ?? string.Empty).Trim();
         t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         await _db.SaveChangesAsync();
-        return NoContent(); 
+        return NoContent();
     }
 
     /// <summary>
@@ -263,7 +271,7 @@ public class AdminTenantsController : ControllerBase
         if (t is null) return NotFound(new { error = "Tenant no encontrado o inactivo" });
 
         t.BusinessRulesJson = raw.Trim();
-        t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);  
+        t.UpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         await _db.SaveChangesAsync();
         return NoContent();
     }
@@ -345,6 +353,14 @@ public class AdminTenantsController : ControllerBase
             t.Temperature,
             t.TopP,
             t.MaxTokens,
+
+            //IA Provider
+            t.IaApiKey,
+            t.FallbackProvider,
+            t.FallbackApiKey,
+            t.EnableImageOCR,
+            t.EnableAutoConnectorInvocation,
+
 
             // Presupuestos / alertas
             t.MonthlyTokenBudget,

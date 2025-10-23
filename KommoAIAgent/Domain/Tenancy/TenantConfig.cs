@@ -33,6 +33,9 @@ namespace KommoAIAgent.Domain.Tenancy
         // Reglas de negocio en JSON (por tenant)
         public JsonDocument? BusinessRules { get; set; }
 
+        //Configuración genérica de IA (multi-provider).
+        public AIProviderConfig AI { get; init; } = new();
+
         /// <summary>
         /// >Reglas de negocio, como texto plano (se guarda en DB como JSON o raw).
         /// </summary>
@@ -101,7 +104,61 @@ namespace KommoAIAgent.Domain.Tenancy
 
         // Prompt del sistema (por tenant)
         public string? SystemPrompt { get; set; }
+
+
     }
+
+    /// <summary>
+    /// Configuración genérica de IA (extensible a múltiples providers).
+    /// </summary>
+    public sealed class AIProviderConfig
+    {
+        /// <summary>
+        /// Proveedor de IA: "openai", "anthropic", "azure", etc.
+        /// </summary>
+        public string Provider { get; init; } = "openai";
+
+        /// <summary>
+        /// API Key específica del tenant (null = usa la global).
+        /// </summary>
+        public string? ApiKey { get; init; }
+
+        /// <summary>
+        /// Modelo a usar (ej: "gpt-4o-mini", "claude-3-5-sonnet").
+        /// </summary>
+        public string? Model { get; init; }
+
+        /// <summary>
+        /// Temperatura (0.0 - 2.0).
+        /// </summary>
+        public float Temperature { get; init; } = 0.7f;
+
+        /// <summary>
+        /// Máximo de tokens a generar.
+        /// </summary>
+        public int MaxTokens { get; init; } = 400;
+
+        /// <summary>
+        /// Proveedor de respaldo si el principal falla.
+        /// </summary>
+        public string? FallbackProvider { get; init; }
+
+        /// <summary>
+        /// API Key del proveedor de respaldo.
+        /// </summary>
+        public string? FallbackApiKey { get; init; }
+
+        /// <summary>
+        /// Habilitar extracción automática de imágenes (OCR).
+        /// </summary>
+        public bool EnableImageOCR { get; init; } = true;
+
+        /// <summary>
+        /// Habilitar invocación automática de conectores desde imágenes.
+        /// </summary>
+        public bool EnableAutoConnectorInvocation { get; init; } = true;
+    }
+
 
 
     /// <summary>

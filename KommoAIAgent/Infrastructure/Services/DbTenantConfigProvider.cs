@@ -94,6 +94,19 @@ namespace KommoAIAgent.Infrastructure.Services
                     SystemPrompt = t.SystemPrompt,
                 },
 
+                AI = new AIProviderConfig
+                {
+                    Provider = t.IaProvider?.ToLowerInvariant() ?? "openai",
+                    ApiKey = t.IaApiKey, // Puede ser null
+                    Model = t.IaModel ?? "gpt-4o-mini",
+                    Temperature = t.Temperature ?? 0.7f,
+                    MaxTokens = t.MaxTokens ?? 400,
+                    FallbackProvider = t.FallbackProvider?.ToLowerInvariant(),
+                    FallbackApiKey = t.FallbackApiKey,
+                    EnableImageOCR = t.EnableImageOCR,
+                    EnableAutoConnectorInvocation = t.EnableAutoConnectorInvocation
+                },
+
                 //Prompting para IA y reglas de negocios x tenant.             
                 BusinessRules = t.BusinessRulesJson is null ? null : JsonDocument.Parse(t.BusinessRulesJson),
 

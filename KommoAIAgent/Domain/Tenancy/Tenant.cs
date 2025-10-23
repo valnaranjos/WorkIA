@@ -24,6 +24,16 @@ public class Tenant
     // IA
     public string IaProvider { get; set; } = "OpenAI";    // enum-string simple para no crear otra tabla, hacerlo dsps.
     public string IaModel { get; set; } = "gpt-4o-mini";
+
+    public string? IaApiKey { get; set; } // opcional, si no usa global
+
+    //Fallback provider
+    public string? FallbackProvider { get; set; }
+    public string? FallbackApiKey { get; set; }
+
+    //Feature flags de IA: OCR y conectores de microservicios.
+    public bool EnableImageOCR { get; set; } = true;
+    public bool EnableAutoConnectorInvocation { get; set; } = true;
     public float? Temperature { get; set; }               // opcional
     public float? TopP { get; set; }                      // opcional
     public int? MaxTokens { get; set; }                   // opcional

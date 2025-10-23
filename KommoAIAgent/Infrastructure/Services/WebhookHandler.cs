@@ -8,9 +8,6 @@ using Microsoft.Extensions.Caching.Memory;
 using Npgsql;
 using NpgsqlTypes;
 using OpenAI.Chat;
-using System.Collections.Generic;
-using System.Data.Common;
-using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
 
@@ -150,27 +147,35 @@ namespace KommoAIAgent.Infrastructure.Services
         /// <param name="leadId"></param>
         /// <param name="userText"></param>
         /// <param name="attachments"></param>
+        /// <params name="ct"></params> 
         /// <returns></returns>
+        /// <summary>
+        /// Procesa un turno agregado (después de debounce)
+        /// Es quien llama a la IA y actualiza Kommo.
+        /// </summary>
         private async Task ProcessAggregatedTurnAsync(long leadId, string userText, List<AttachmentInfo> attachments, CancellationToken ct = default)
         {
             _logger.LogInformation("Procesando TURNO AGREGADO para Lead {LeadId}. Texto='{Text}', Adjuntos={AdjCount}",
                 leadId, userText, attachments?.Count ?? 0);
 
-            const int KOMMO_FIELD_MAX = 8000;      // único lugar
+            const int KOMMO_FIELD_MAX = 8000;
             const float GuardrailScore = 0.22f;
 
             try
             {
-                // Limitar bursts por tenant/lead (lee Budgets.BurstPerMinute)
+                // Limitar bursts por tenant/lead
                 var tenantSlug = _tenant.CurrentTenantId.Value;
                 if (!await _limiter.TryConsumeAsync(tenantSlug, leadId, ct))
                 {
                     _logger.LogWarning("Rate limited: tenant={Tenant}, lead={LeadId}", tenantSlug, leadId);
-                    return; // se detiene el procesamiento para no llamar a OpenAI.
+                    return;
                 }
 
-                // 🆕 ========== DETECCIÓN DE INTENCIÓN EXTERNA ==========
-                // Solo si NO hay imágenes adjuntas (las imágenes van directo a IA)
+                // ========== PASO 1: DETECCIÓN DE INTENCIÓN Y CONECTORES ==========
+                // Variable para almacenar datos del conector (si se invoca)
+                object? externalData = null;
+                string? externalDataSource = null;
+
                 var hasImage = attachments?.Any(AttachmentHelper.IsImage) ?? false;
 
                 if (!hasImage && !string.IsNullOrWhiteSpace(userText))
@@ -184,44 +189,12 @@ namespace KommoAIAgent.Infrastructure.Services
                             intent.Capability, intent.Confidence
                         );
 
-                        // 🔧 NUEVO: Verificar parámetros requeridos
-                        string? missingParam = null;
+                        // Verificar si tiene todos los parámetros requeridos
+                        bool hasAllParams = CheckRequiredParameters(intent);
 
-                        // Para get_patient_appointments, necesitamos patientDocument
-                        if (intent.Capability == "get_patient_appointments")
+                        if (hasAllParams)
                         {
-                            if (!intent.Parameters.ContainsKey("patientDocument") &&
-                                !intent.Parameters.ContainsKey("document"))
-                            {
-                                missingParam = "documento";
-                            }
-                        }
-
-                        // Para cancel_appointment, necesitamos agendaId
-                        if (intent.Capability == "cancel_appointment")
-                        {
-                            if (!intent.Parameters.ContainsKey("agendaId") &&
-                                !intent.Parameters.ContainsKey("agenda_id"))
-                            {
-                                missingParam = "número de cita";
-                            }
-                        }
-
-                        // 🔧 Si falta un parámetro, pedir a la IA que lo solicite
-                        if (missingParam != null)
-                        {
-                            _logger.LogInformation(
-                                "Missing parameter '{Param}' for capability {Capability}, asking AI to request it",
-                                missingParam, intent.Capability
-                            );
-
-                            // NO invocar conector, dejar que la IA maneje la conversación
-                            // y pida el parámetro faltante naturalmente
-                            // El código continúa abajo con el flujo normal de IA
-                        }
-                        else
-                        {
-                            // ✅ Todos los parámetros están presentes, invocar conector
+                            // ✅ Invocar conector
                             var connectorResult = await HandleExternalActionAsync(
                                 leadId,
                                 intent,
@@ -231,112 +204,97 @@ namespace KommoAIAgent.Infrastructure.Services
 
                             if (connectorResult.Success)
                             {
-                                // ✅ Conector manejó exitosamente la acción
-                                await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
-                                await _conv.AppendAssistantAsync(_tenant, leadId, connectorResult.Message!, ct);
-
-                                // 🔧 FIX: Intentar actualizar Kommo, pero no fallar si no hay token
-                                try
-                                {
-                                    await _kommoService.UpdateLeadMensajeIAAsync(
-                                        leadId,
-                                        TextUtil.Truncate(connectorResult.Message!, KOMMO_FIELD_MAX),
-                                        ct
-                                    );
-                                }
-                                catch (InvalidOperationException ex) when (ex.Message.Contains("AccessToken"))
-                                {
-                                    _logger.LogWarning(
-                                        "No se pudo actualizar Kommo (sin token configurado) - lead={LeadId}",
-                                        leadId
-                                    );
-                                    // No lanzar error, continuar
-                                }
-
                                 _logger.LogInformation(
-                                    "External action completed successfully (lead={LeadId}, capability={Capability})",
+                                    "Connector invoked successfully (lead={LeadId}, capability={Capability})",
                                     leadId, intent.Capability
                                 );
 
-                                return; // ⚠️ Salir aquí, no llamar a IA
+                                // 🔧 GUARDAR los datos para pasárselos a la IA
+                                externalData = connectorResult.Data;
+                                externalDataSource = $"{intent.ConnectorType}.{intent.Capability}";
+
+                                // ⚠️ NO SALIR AQUÍ - Continuar al flujo de IA
                             }
                             else
                             {
-                                // ⚠️ Conector falló, continuar con respuesta de IA (fallback)
                                 _logger.LogWarning(
-                                    "External connector failed, falling back to AI (lead={LeadId}, error={Error})",
+                                    "Connector failed (lead={LeadId}, error={Error})",
                                     leadId, connectorResult.ErrorDetails
                                 );
+                                // Continuar sin datos del conector (fallback a IA pura)
                             }
+                        }
+                        else
+                        {
+                            _logger.LogInformation(
+                                "Missing required parameters for {Capability}, letting AI handle the conversation",
+                                intent.Capability
+                            );
+                            // La IA pedirá los parámetros faltantes naturalmente
                         }
                     }
                 }
 
+                // ========== PASO 2: GUARDAR MENSAJE DEL USUARIO ==========
+                await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
 
-                // Construir el historial de mensajes para enviar a la IA
+                // ========== PASO 3: CONSTRUIR CONTEXTO PARA LA IA ==========
                 var messages = await ChatComposer.BuildHistoryMessagesAsync(
-                _conv, _tenant, leadId, historyTurns: 10, ct);
+                    _conv, _tenant, leadId, historyTurns: 10, ct
+                );
 
+                var inputEstimate = AiUtil.EstimateTokens(
+                    string.Join("\n", messages.Select(m => m.Content?.ToString() ?? string.Empty))
+                );
 
-                var inputEstimate = AiUtil.EstimateTokens(string.Join("\n", messages.Select(m => m.Content?.ToString() ?? string.Empty)));
                 string aiResponse;
-
                 var img = attachments?.FirstOrDefault(AttachmentHelper.IsImage);
 
+                // ========== RAMA: IMAGEN ==========
                 if (img != null && !string.IsNullOrWhiteSpace(img.Url))
                 {
-                    // Procesar imagen + texto, desde URL (descargar primero)
                     var (bytes, mime, fileName) = await _kommoService.DownloadAttachmentAsync(img.Url!);
                     if (string.IsNullOrWhiteSpace(mime))
                         mime = AttachmentHelper.GuessMimeFromUrlOrName(img.Url!, fileName);
 
-
-                    // Guardar en caché la última imagen para este lead
                     _lastImage.SetLastImage(tenantSlug, leadId, bytes, mime);
 
-                    // Prompt por defecto si la imagen viene sin texto
                     var prompt = string.IsNullOrWhiteSpace(userText)
                         ? "Describe la imagen y extrae cualquier texto visible."
                         : userText;
 
                     ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
 
-                    // ---- GUARDRAIL: presupuesto antes de invocar IA (multimodal) ----
-                    var estTotalImg = inputEstimate + 600; // 600 = el mismo maxTokens que usarás abajo
+                    // Guardrail de presupuesto
+                    var estTotalImg = inputEstimate + 600;
                     if (!await _tokenBudget.CanConsumeAsync(_tenant, estTotalImg, ct))
                     {
                         const string budgetMsg = "He alcanzado el presupuesto de uso asignado. Intentémoslo más tarde.";
                         await _conv.AppendAssistantAsync(_tenant, leadId, budgetMsg, ct);
                         await _kommoService.UpdateLeadMensajeIAAsync(
-                            leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), CancellationToken.None);
-                        _logger.LogWarning("Budget guardrail (imagen) tenant={Tenant} estTokens={Est}", _tenant.CurrentTenantId, estTotalImg);
+                            leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), ct);
+                        _logger.LogWarning("Budget guardrail (imagen) tenant={Tenant}", tenantSlug);
                         return;
                     }
-                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
 
-                    await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
-                    await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
+                    aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                 }
+                // ========== RAMA: SOLO TEXTO ==========
                 else
                 {
-                    //Rama de solo texto (sin imagen)
-                    // Recuperación semántica (RAG) antes de llamar a la IA
-                    // Buscamos topK=6 fragmentos relevantes en la KB del tenant
-                    // y los añadimos como un system message de "CONTEXT".
-
+                    // ========== PASO 3.1: RAG (SIEMPRE, incluso si hubo conector) ==========
                     List<KbChunkHit>? hits = null;
                     float topScore = 0f;
+
                     try
                     {
-                        // 🔹 Declaramos cacheKey ANTES de usarlo
                         var cacheKey = $"kbhits:{tenantSlug}:{userText}:{6}";
 
-                        // Cache por tenant+query+k
                         if (!_cache.TryGetValue(cacheKey, out hits))
                         {
                             var (hitsList, ts) = await _ragRetriever.RetrieveAsync(tenantSlug, userText, topK: 6, ct);
                             topScore = ts;
-                            hits = hitsList.ToList(); // Reasigna (no redeclares)
+                            hits = hitsList.ToList();
                             _cache.Set(cacheKey, hits, TimeSpan.FromSeconds(30));
                         }
                         else
@@ -346,35 +304,30 @@ namespace KommoAIAgent.Infrastructure.Services
 
                         if (hits.Count > 0)
                             _logger.LogInformation("RAG hits={Count}, topScore={Top:0.000}", hits.Count, topScore);
-                        else
-                            _logger.LogInformation("RAG sin resultados para tenant={Tenant}", tenantSlug);
 
-                        if (hits.Count == 0 || topScore < GuardrailScore)
+                        // 🔧 AJUSTE: Si hay datos de conector, NO aplicar guardrail de RAG
+                        // (el conector ya proveyó datos válidos)
+                        if (externalData == null && (hits.Count == 0 || topScore < GuardrailScore))
                         {
                             var safeReply =
                                 "No encuentro información suficiente en la base de conocimiento para responder con precisión. " +
-                                "¿Podrías darme más detalle (por ejemplo, producto, ciudad o tipo de trámite)?";
+                                "¿Podrías darme más detalle?";
 
-                            await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
                             await _conv.AppendAssistantAsync(_tenant, leadId, safeReply, ct);
-
                             await _kommoService.UpdateLeadMensajeIAAsync(
-                                leadId,
-                                TextUtil.Truncate(safeReply, KOMMO_FIELD_MAX),
-                                CancellationToken.None);
+                                leadId, TextUtil.Truncate(safeReply, KOMMO_FIELD_MAX), ct);
 
-                            _logger.LogInformation("RAG guardrail: respuesta segura enviada sin invocar IA (lead={LeadId})", leadId);
+                            _logger.LogInformation("RAG guardrail activado (lead={LeadId})", leadId);
                             return;
                         }
 
                         // Inyectar contexto RAG si el score es suficiente
                         const float MinScore = 0.28f;
-                        if (topScore >= MinScore)
+                        if (topScore >= MinScore && hits.Count > 0)
                         {
                             var sbCtx = new StringBuilder();
                             sbCtx.AppendLine(
-                                "CONTEXT (RAG): Usa EXCLUSIVAMENTE estos fragmentos para responder. " +
-                                "Si el contexto no contiene la respuesta, dilo explícitamente y pide más detalles.\n"
+                                "CONTEXT (RAG): Usa estos fragmentos como referencia para responder.\n"
                             );
 
                             for (int i = 0; i < hits.Count; i++)
@@ -389,17 +342,44 @@ namespace KommoAIAgent.Infrastructure.Services
                     }
                     catch (Exception rex)
                     {
-                        _logger.LogWarning(rex, "RAG search falló; se continúa sin contexto.");
-                        messages.Add(ChatMessage.CreateSystemMessage(
-                            "El contexto no está disponible por un error de recuperación. " +
-                            "Responde de forma general y pide detalles; no inventes datos específicos."
-                        ));
+                        _logger.LogWarning(rex, "RAG search falló; continuando sin contexto");
                     }
 
-                    //  Finalmente añadimos el mensaje del usuario y pedimos a la IA
+                    // ========== PASO 3.2: AGREGAR DATOS DEL CONECTOR (si los hay) ==========
+                    if (externalData != null)
+                    {
+                        var connectorDataJson = JsonSerializer.Serialize(externalData, new JsonSerializerOptions
+                        {
+                            WriteIndented = true
+                        });
+
+                        var connectorContext = $@"
+DATOS DEL SISTEMA EXTERNO (fuente: {externalDataSource}):
+```json
+{connectorDataJson}
+```
+
+INSTRUCCIONES:
+- Estos datos provienen de un sistema externo y son información actualizada y confiable
+- Analiza estos datos y responde al usuario en lenguaje natural y conversacional
+- Presenta la información de forma clara, organizada y fácil de entender
+- Usa un tono profesional pero cercano
+- NO inventes información que no esté en los datos
+- Si el usuario pregunta por detalles adicionales que no están en los datos, indícalo claramente
+";
+
+                        messages.Add(ChatMessage.CreateSystemMessage(connectorContext));
+
+                        _logger.LogInformation(
+                            "Added external data context to IA (source={Source}, dataSize={Size})",
+                            externalDataSource, connectorDataJson.Length
+                        );
+                    }
+
+                    // ========== PASO 3.3: AGREGAR MENSAJE DEL USUARIO ==========
                     if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last))
                     {
-                        // Si hay una imagen reciente en cache, reusamos multimodal
+                        // Reuso de imagen reciente en caché
                         ChatComposer.AppendUserTextAndImage(messages, userText, last.Bytes, last.Mime);
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
                     }
@@ -408,34 +388,63 @@ namespace KommoAIAgent.Infrastructure.Services
                         // Solo texto
                         ChatComposer.AppendUserText(messages, userText);
 
-                        // ---- GUARDRAIL: presupuesto antes de invocar IA (texto) ----
-                        var estTotalText = inputEstimate + 400; // 400 = el mismo maxTokens que usarás abajo
+                        // Guardrail de presupuesto
+                        var estTotalText = inputEstimate + 400;
                         if (!await _tokenBudget.CanConsumeAsync(_tenant, estTotalText, ct))
                         {
                             const string budgetMsg = "He alcanzado el presupuesto de uso asignado. Intentémoslo más tarde.";
                             await _conv.AppendAssistantAsync(_tenant, leadId, budgetMsg, ct);
                             await _kommoService.UpdateLeadMensajeIAAsync(
-                                leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), CancellationToken.None);
-                            _logger.LogWarning("Budget guardrail (texto) tenant={Tenant} estTokens={Est}", _tenant.CurrentTenantId, estTotalText);
+                                leadId, TextUtil.Truncate(budgetMsg, KOMMO_FIELD_MAX), ct);
+                            _logger.LogWarning("Budget guardrail (texto) tenant={Tenant}", tenantSlug);
                             return;
                         }
+
                         aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 400, model: null, ct);
                     }
-
-                    // Persistimos conversación
-                    await _conv.AppendUserAsync(_tenant, leadId, userText, ct);
-                    await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
                 }
 
-                await _kommoService.UpdateLeadMensajeIAAsync(
-                    leadId,
-                    TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
-                    CancellationToken.None);
+                // ========== PASO 4: GUARDAR Y ENVIAR RESPUESTA ==========
+                await _conv.AppendAssistantAsync(_tenant, leadId, aiResponse, ct);
+
+                try
+                {
+                    await _kommoService.UpdateLeadMensajeIAAsync(
+                        leadId,
+                        TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
+                        ct
+                    );
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("AccessToken"))
+                {
+                    _logger.LogWarning("No se pudo actualizar Kommo (sin token) - lead={LeadId}", leadId);
+                }
+
+                _logger.LogInformation("Turn completed successfully (lead={LeadId})", leadId);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error procesando TURNO AGREGADO para Lead {LeadId}", leadId);
             }
+        }
+
+        // ========== MÉTODO AUXILIAR ==========
+        private bool CheckRequiredParameters(ExternalIntent intent)
+        {
+            if (intent.Capability == "get_patient_appointments")
+            {
+                return intent.Parameters.ContainsKey("patientDocument") ||
+                       intent.Parameters.ContainsKey("document");
+            }
+
+            if (intent.Capability == "cancel_appointment")
+            {
+                return intent.Parameters.ContainsKey("agendaId") ||
+                       intent.Parameters.ContainsKey("agenda_id");
+            }
+
+            // Por defecto, asumir que tiene los parámetros necesarios
+            return true;
         }
 
 

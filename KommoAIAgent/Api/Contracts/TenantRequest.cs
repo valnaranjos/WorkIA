@@ -40,6 +40,22 @@ namespace KommoAIAgent.Api.Contracts
         /// <summary>Modelo por defecto para chat.</summary>
         public string IaModel { get; set; } = "gpt-4o-mini";
 
+        /// <summary>API Key específica del tenant (opcional, si es null usa la global).</summary>
+        public string? IaApiKey { get; set; }
+
+        /// <summary>Proveedor de respaldo si el principal falla.</summary>
+        public string? FallbackProvider { get; set; }
+
+        /// <summary>API Key del proveedor de respaldo.</summary>
+        public string? FallbackApiKey { get; set; }
+
+        /// <summary>Habilitar extracción automática de imágenes (OCR).</summary>
+        public bool EnableImageOCR { get; set; } = true;
+
+        /// <summary>Habilitar invocación automática de conectores desde imágenes.</summary>
+        public bool EnableAutoConnectorInvocation { get; set; } = true;
+
+
         [Range(1, 8192)]
         // Máximo tokens de respuesta (el prompt puede ser más grande).
         public int MaxTokens { get; set; } = 500;
@@ -115,6 +131,12 @@ namespace KommoAIAgent.Api.Contracts
         public float? TopP { get; set; }
         public string? SystemPrompt { get; set; }
         public JsonElement? BusinessRules { get; set; }
+
+        public string? IaApiKey { get; set; }
+        public string? FallbackProvider { get; set; }
+        public string? FallbackApiKey { get; set; }
+        public bool? EnableImageOCR { get; set; }
+        public bool? EnableAutoConnectorInvocation { get; set; }
 
         // Operación / límites
         [Range(0, 60000)]
@@ -193,6 +215,13 @@ namespace KommoAIAgent.Api.Contracts
         float? Temperature,
         float? TopP,
         int? MaxTokens,
+
+        //IA Provider - configuración avanzada
+        string? IaApiKey,
+        string? FallbackProvider,
+        string? FallbackApiKey,
+        bool EnableImageOCR,
+        bool EnableAutoConnectorInvocation,
 
         // Presupuestos / alertas
         int MonthlyTokenBudget,

@@ -593,26 +593,38 @@ REGLAS GENERALES:
         }
     }
 
+
+    /// <summary>
+    /// Obtiene o crea el cliente OpenAIClient para el tenant actual con su ApiKey si es necesario
+    /// </summary>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
     private OpenAIClient EnsureClient()
     {
         var slug = _tenant.Config?.Slug ?? _tenant.CurrentTenantId.Value;
         if (string.IsNullOrWhiteSpace(slug))
-            throw new InvalidOperationException("Tenant no resuelto para esta petición (falta middleware o header X-Tenant-Slug).");
+            throw new InvalidOperationException("Tenant no resuelto.");
 
-        var apiKey = _keys.GetApiKey(_tenant.Config);
+        // 🆕 CAMBIO: Intentar usar API Key del tenant primero
+        var apiKey = _tenant.Config?.AI?.ApiKey  // Primero del nuevo campo
+                     ?? _keys.GetApiKey(_tenant.Config);  // Fallback al actual
+
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException($"OpenAI.ApiKey no configurada para tenant '{slug}'.");
+
         if (_client is null || !string.Equals(apiKey, _cachedApiKey, StringComparison.Ordinal))
         {
             lock (_clientLock)
             {
-                // Re-check dentro del lock
                 if (_client is null || !string.Equals(apiKey, _cachedApiKey, StringComparison.Ordinal))
                 {
                     _cachedApiKey = apiKey;
                     _client = new OpenAIClient(apiKey);
                     _logger.LogInformation(
-                        "OpenAiService: cliente (re)creado para tenant={Tenant}", slug);
+                        "OpenAiService: cliente (re)creado para tenant={Tenant}, provider={Provider}",
+                        slug,
+                        _tenant.Config?.AI?.Provider ?? "openai"
+                    );
                 }
             }
         }
