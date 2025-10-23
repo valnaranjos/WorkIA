@@ -184,6 +184,12 @@ namespace KommoAIAgent.Infrastructure.Services
                 var hasImage = attachments?.Any(AttachmentHelper.IsImage) ?? false;
                 var hasText = !string.IsNullOrWhiteSpace(userText);
 
+                if (hasText && !hasImage)
+                {
+                    _lastImage.Remove(tenantSlug, leadId);
+                    _logger.LogInformation("Cleared image cache for lead={Lead} (text without image)", leadId);
+                }
+
                 // CASO 1: Solo imagen (sin texto) - Extraer texto primero
                 if (hasImage && !hasText && _tenant.Config?.AI?.EnableImageOCR == true)
                 {
@@ -263,6 +269,8 @@ IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
                                 "Synthesized userText from image: {Text}",
                                 userText
                             );
+                            // Borrar caché de img
+                            _lastImage.Remove(tenantSlug, leadId);
                         }
                     }
                     catch (Exception ex)
@@ -272,8 +280,9 @@ IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
                 }
 
                 // PASO 2: DETECCIÓN DE INTENCIÓN (con o sin imagen)
-                if (!string.IsNullOrWhiteSpace(userText) && _tenant.Config?.AI?.EnableAutoConnectorInvocation == true)
-                {
+                if (!string.IsNullOrWhiteSpace(userText)
+     && _tenant.Config?.AI?.EnableAutoConnectorInvocation == true
+     && !userText.Contains("no puedo identificar")) { 
                     var intent = await _intentDetector.DetectAsync(userText, tenantSlug, ct);
 
                     if (intent.RequiresConnector && intent.Confidence >= 0.7f)
@@ -375,6 +384,9 @@ IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
 
                     ChatComposer.AppendUserTextAndImage(messages, prompt, bytes, mime);
                     aiResponse = await _aiService.CompleteAsync(messages, maxTokens: 600, model: "gpt-4o", ct);
+                    
+                    _lastImage.Remove(tenantSlug, leadId);
+                    _logger.LogInformation("Cleared image cache after processing (lead={Lead})", leadId);
                 }
                 // ========== RAMA: SOLO TEXTO ==========
                 else
@@ -444,7 +456,9 @@ IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
                     }
 
                     // PASO 4.3: AGREGAR MENSAJE DEL USUARIO
-                    if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last))
+                    if (_lastImage.TryGetLastImage(tenantSlug, leadId, out LastImageCache.ImageCtx last)
+     && last.Bytes?.Length > 0
+     && last.Mime?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
                     {
                         // Reuso de imagen reciente en caché
                         ChatComposer.AppendUserTextAndImage(messages, userText ?? "", last.Bytes, last.Mime);
@@ -476,11 +490,8 @@ IMPORTANTE: Responde SOLO el JSON, sin texto adicional.
 
                 try
                 {
-                    await _kommoService.UpdateLeadMensajeIAAsync(
-                        leadId,
-                        TextUtil.Truncate(aiResponse, KOMMO_FIELD_MAX),
-                        ct
-                    );
+                    await SendResponseToKommoAsync(leadId, aiResponse, ct);
+                    
                 }
                 catch (InvalidOperationException ex) when (ex.Message.Contains("AccessToken"))
                 {
@@ -733,6 +744,73 @@ INSTRUCCIONES:
             {
                 _logger.LogWarning(ex, "Failed to log connector invocation");
                 // No lanzar excepción, es solo logging
+            }
+        }
+
+        /// <summary>
+        /// Envía respuesta a Kommo, dividiéndola en múltiples mensajes si es necesario
+        /// </summary>
+        private async Task SendResponseToKommoAsync(long leadId, string message, CancellationToken ct)
+        {
+            const int MAX_KOMMO_LENGTH = 1000; // Límite seguro para Kommo
+
+            // Si cabe en un mensaje, enviar directamente
+            if (message.Length <= MAX_KOMMO_LENGTH)
+            {
+                await _kommoService.UpdateLeadMensajeIAAsync(leadId, message, ct);
+                return;
+            }
+
+            _logger.LogInformation(
+                "Message too long ({Length} chars), splitting for lead={Lead}",
+                message.Length, leadId
+            );
+
+            // Dividir por dobles saltos de línea (párrafos)
+            var paragraphs = message.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+            var currentPart = new StringBuilder();
+            int partNumber = 1;
+
+            foreach (var paragraph in paragraphs)
+            {
+                var trimmedParagraph = paragraph.Trim();
+
+                // Si agregar este párrafo excede el límite
+                if (currentPart.Length + trimmedParagraph.Length + 2 > MAX_KOMMO_LENGTH)
+                {
+                    // Enviar parte acumulada
+                    if (currentPart.Length > 0)
+                    {
+                        var part = currentPart.ToString().Trim();
+
+                        _logger.LogInformation(
+                            "Sending part {Part} ({Length} chars) to lead={Lead}",
+                            partNumber, part.Length, leadId
+                        );
+
+                        await _kommoService.UpdateLeadMensajeIAAsync(leadId, part, ct);
+                        await Task.Delay(500, ct); // Pausa entre mensajes
+
+                        currentPart.Clear();
+                        partNumber++;
+                    }
+                }
+
+                currentPart.AppendLine(trimmedParagraph);
+                currentPart.AppendLine(); // Espacio entre párrafos
+            }
+
+            // Enviar última parte
+            if (currentPart.Length > 0)
+            {
+                var part = currentPart.ToString().Trim();
+
+                _logger.LogInformation(
+                    "Sending final part {Part} ({Length} chars) to lead={Lead}",
+                    partNumber, part.Length, leadId
+                );
+
+                await _kommoService.UpdateLeadMensajeIAAsync(leadId, part, ct);
             }
         }
     }
